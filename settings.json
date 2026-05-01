@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.71.0",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "medium",
+  "defaultThinkingLevel": "low",
   "autocompleteMaxVisible": 3,
   "terminal": {
     "showTerminalProgress": true
@@ -10,5 +10,12 @@
   "steeringMode": "all",
   "transport": "auto",
   "theme": "dark",
-  "sessionDir": "~/.local/state/pi/sessions"
+  "sessionDir": "~/.local/state/pi/sessions",
+  "packages": [
+    "npm:pi-mcp-adapter",
+    "npm:pi-subagents",
+    "npm:pi-intercom",
+    "npm:pi-smart-fetch",
+    "npm:pi-sandbox"
+  ]
 }

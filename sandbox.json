@@ -1,0 +1,83 @@
+{
+  "enabled": true,
+  "allowBrowserProcess": true,
+  "network": {
+    "allowLocalBinding": true,
+    "allowAllUnixSockets": true,
+    "allowedDomains": [
+      "localhost",
+      "127.0.0.1",
+      "::1",
+      "github.com",
+      "*.github.com",
+      "api.github.com",
+      "raw.githubusercontent.com",
+      "objects.githubusercontent.com",
+      "github-releases.githubusercontent.com",
+      "opendev.org",
+      "*.opendev.org",
+      "review.opendev.org",
+      "zuul.opendev.org",
+      "docs.openstack.org",
+      "*.openstack.org",
+      "pypi.org",
+      "*.pypi.org",
+      "files.pythonhosted.org",
+      "*.pythonhosted.org",
+      "registry.npmjs.org",
+      "*.npmjs.org",
+      "mcp.context7.com"
+    ],
+    "deniedDomains": []
+  },
+  "filesystem": {
+    "denyRead": [
+      "~/.ssh",
+      "~/.gnupg",
+      "~/.secrets"
+    ],
+    "allowRead": [
+      ".",
+      "~/repos",
+      "/nix/store",
+      "~/.config/pi/AGENTS.md",
+      "~/.agents",
+      "~/.local",
+      "~/.cache",
+      "~/.cargo",
+      "~/.rustup",
+      "~/go",
+      "~/Library",
+      "/Applications/Google Chrome.app",
+      "/System/Volumes/Data/Applications/Google Chrome.app"
+    ],
+    "allowWrite": [
+      ".",
+      "~/repos",
+      "/tmp",
+      "/private/tmp",
+      "~/.cache",
+      "~/.npm",
+      "~/.local/share",
+      "~/.local/state",
+      "~/.local/npm-packages",
+      "~/.cargo",
+      "~/.rustup",
+      "~/go",
+      "~/.agent-browser",
+      "~/Library/Caches",
+      "~/Library/Application Support/ms-playwright",
+      "~/Library/Application Support/Google/Chrome",
+      "~/Library/Application Support/Google/Chrome for Testing/Crashpad"
+    ],
+    "denyWrite": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "~/.ssh",
+      "~/.gnupg",
+      "~/.secrets"
+    ]
+  }
+}
