@@ -41,6 +41,7 @@
       "~/repos",
       "/nix/store",
       "~/.config/pi/AGENTS.md",
+      "~/.ssh/id_ed25519.pub",
       "~/.agents",
       "~/.local",
       "~/.cache",
