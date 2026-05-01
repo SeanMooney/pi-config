@@ -1,0 +1,14 @@
+{
+  "lastChangelogVersion": "0.71.0",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "medium",
+  "autocompleteMaxVisible": 3,
+  "terminal": {
+    "showTerminalProgress": true
+  },
+  "steeringMode": "all",
+  "transport": "auto",
+  "theme": "dark",
+  "sessionDir": "~/.local/state/pi/sessions"
+}
