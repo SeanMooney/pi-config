@@ -2,7 +2,7 @@
   "lastChangelogVersion": "0.71.0",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "low",
+  "defaultThinkingLevel": "minimal",
   "autocompleteMaxVisible": 3,
   "terminal": {
     "showTerminalProgress": true
