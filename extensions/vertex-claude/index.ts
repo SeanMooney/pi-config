@@ -1,5 +1,5 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { streamAnthropic, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getModel, streamAnthropic, type Context, type Model, type SimpleStreamOptions, type ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { GoogleAuth } from "google-auth-library";
 
@@ -213,11 +213,31 @@ function addAliases(models: VertexClaudeModel[]): VertexClaudeModel[] {
 	return result;
 }
 
+function anthropicCatalogModel(modelId: string): { thinkingLevelMap?: ThinkingLevelMap } | undefined {
+	const strippedId = modelId.replace(/@.*$/, "");
+	const candidateIds = strippedId === modelId ? [modelId] : [modelId, strippedId];
+	const lookup = getModel as (provider: string, modelId: string) => { thinkingLevelMap?: ThinkingLevelMap } | undefined;
+	for (const candidateId of candidateIds) {
+		const model = lookup("anthropic", candidateId);
+		if (model) return model;
+	}
+	return undefined;
+}
+
+function anthropicThinkingLevelMap(modelId: string): ThinkingLevelMap | undefined {
+	return anthropicCatalogModel(modelId)?.thinkingLevelMap;
+}
+
 function toPiModel(model: VertexClaudeModel) {
+	// Inherit thinkingLevelMap from Pi's built-in Anthropic catalog so upstream
+	// maintenance of model capabilities (e.g. xhigh support) flows through
+	// automatically. Alias models delegate to their target's map.
+	const lookupId = model.aliasTarget ?? model.id;
 	return {
 		id: model.id,
 		name: model.name,
 		reasoning: true,
+		thinkingLevelMap: anthropicThinkingLevelMap(lookupId),
 		input: ["text", "image"] as ("text" | "image")[],
 		contextWindow: DEFAULT_CONTEXT_WINDOW,
 		maxTokens: DEFAULT_MAX_TOKENS,
@@ -226,19 +246,22 @@ function toPiModel(model: VertexClaudeModel) {
 }
 
 function effortForReasoning(level: ReasoningLevel, modelId: string): AnthropicEffort {
+	// Prefer Pi's built-in Anthropic catalog for effort values — this keeps
+	// model-specific quirks (e.g. opus-4-6 xhigh→max, opus-4-7 xhigh→xhigh)
+	// maintained upstream rather than duplicated here.
+	const mapped = anthropicThinkingLevelMap(modelId)?.[level];
+	if (typeof mapped === "string") return mapped as AnthropicEffort;
 	switch (level) {
 		case "minimal":
 		case "low":
 			return "low";
 		case "medium":
 			return "medium";
-		case "xhigh":
-			if (modelId.includes("opus-4-6") || modelId.includes("opus.4.6")) return "max";
-			if (modelId.includes("opus-4-7") || modelId.includes("opus.4.7")) return "xhigh";
-			return "high";
 		case "high":
-		default:
+		case "xhigh":
 			return "high";
+		default:
+			return "medium";
 	}
 }
 

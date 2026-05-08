@@ -63,21 +63,21 @@ npm audit --omit=dev
 echo
 
 echo "==> Model listing with discovery disabled (fallback list)"
-VERTEX_CLAUDE_DISABLE_DISCOVERY=1 "$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude | tee /tmp/vertex-claude-models-fallback.txt
+VERTEX_CLAUDE_DISABLE_DISCOVERY=1 "$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude 2>&1 | tee /tmp/vertex-claude-models-fallback.txt
 grep -qE '^vertex-claude[[:space:]]+sonnet[[:space:]]' /tmp/vertex-claude-models-fallback.txt
 grep -qE '^vertex-claude[[:space:]]+claude-sonnet-4-6[[:space:]]' /tmp/vertex-claude-models-fallback.txt
 
 echo
 
 echo "==> Model listing with normal discovery path"
-"$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude | tee /tmp/vertex-claude-models-discovery.txt
+"$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude 2>&1 | tee /tmp/vertex-claude-models-discovery.txt
 grep -qE '^vertex-claude[[:space:]]+sonnet[[:space:]]' /tmp/vertex-claude-models-discovery.txt
 
 echo
 
 echo "==> Explicit VERTEX_CLAUDE_MODELS override is authoritative"
 VERTEX_CLAUDE_MODELS="claude-sonnet-4-6" VERTEX_CLAUDE_DISABLE_DISCOVERY=1 \
-	"$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude | tee /tmp/vertex-claude-models-override.txt
+	"$PI_BIN" --no-extensions -e "$EXT_ENTRY" --list-models vertex-claude 2>&1 | tee /tmp/vertex-claude-models-override.txt
 grep -qE '^vertex-claude[[:space:]]+claude-sonnet-4-6[[:space:]]' /tmp/vertex-claude-models-override.txt
 grep -qE '^vertex-claude[[:space:]]+sonnet[[:space:]]' /tmp/vertex-claude-models-override.txt
 if grep -qE '^vertex-claude[[:space:]]+claude-opus' /tmp/vertex-claude-models-override.txt; then

@@ -8,8 +8,8 @@
     "google-auth-library": "^9.15.1"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "0.71.0",
-    "@mariozechner/pi-coding-agent": "0.71.0",
+    "@earendil-works/pi-ai": "0.74.0",
+    "@earendil-works/pi-coding-agent": "0.74.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   }

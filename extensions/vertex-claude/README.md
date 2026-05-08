@@ -35,7 +35,8 @@ The fallback model list is based on Google's Vertex AI Claude model documentatio
 
 ## Requirements
 
-- Pi 0.71.x-compatible extension runtime.
+- Pi 0.74.x-compatible extension runtime using the `@earendil-works/*` package
+  scope.
 - Node runtime compatible with Pi and this extension's dependencies.
 - Google Application Default Credentials that can access Vertex AI Anthropic publisher models.
 - A Google Cloud project with access to the desired Claude models.
@@ -184,7 +185,15 @@ Discovery is best-effort:
 
 ## Thinking support
 
-The extension advertises reasoning support for current Claude 4 models. When Pi enables thinking, the extension passes both adaptive-effort and token-budget hints to Pi's Anthropic provider. Pi's Anthropic implementation decides which form applies to the concrete model ID.
+The extension advertises reasoning support for current Claude 4 models. It
+inherits `thinkingLevelMap` metadata from Pi's built-in Anthropic catalog so
+Pi's thinking-level UI follows the same model capabilities as the native
+Anthropic provider. Vertex model IDs with revision suffixes such as `@001` are
+matched against the base Anthropic model ID for this lookup.
+
+When Pi enables thinking, the extension passes both adaptive-effort and
+token-budget hints to Pi's Anthropic provider. Pi's Anthropic implementation
+decides which form applies to the concrete model ID.
 
 Reasoning level mapping:
 
@@ -194,7 +203,7 @@ Reasoning level mapping:
 | `low` | 4,096 | `low` |
 | `medium` | 8,192 | `medium` |
 | `high` | 16,384 | `high` |
-| `xhigh` | 32,768 | `xhigh` for Opus 4.7, `max` for Opus 4.6, otherwise `high` |
+| `xhigh` | 32,768 | Anthropic catalog value when present (`max` for Opus 4.6, `xhigh` for Opus 4.7), otherwise `high` |
 
 ## Security notes
 
