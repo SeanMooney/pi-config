@@ -1,0 +1,16 @@
+{
+  "name": "pi-extension-vertex-claude",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/vertex-sdk": "^0.16.0",
+    "google-auth-library": "^9.15.1"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "0.71.0",
+    "@mariozechner/pi-coding-agent": "0.71.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
