@@ -1,0 +1,60 @@
+{
+  "name": "pi-sandbox",
+  "version": "0.4.3",
+  "description": "OS-level sandboxing for pi with interactive permission prompts",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carderne/pi-sandbox.git"
+  },
+  "author": "Chris Arderne <chris@rdrn.me>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/carderne/pi-sandbox/issues"
+  },
+  "homepage": "https://github.com/carderne/pi-sandbox",
+  "scripts": {
+    "fmt": "oxfmt index.ts",
+    "lint": "oxlint index.ts",
+    "check": "tsc --noEmit",
+    "all": "npm run fmt && npm run lint && npm run check",
+    "ci:fmt": "oxfmt --check index.ts",
+    "ci:lint": "npm run lint",
+    "ci:check": "npm run check"
+  },
+  "dependencies": {
+    "@carderne/sandbox-runtime": "^0.0.49"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.71.0"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.71.0",
+    "@types/node": "^24",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "minimatch": ">=10.2.1",
+    "lodash-es": ">=4.18.1"
+  }
+}
