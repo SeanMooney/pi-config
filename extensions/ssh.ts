@@ -13,7 +13,7 @@
  * so remote SSH execution intentionally bypasses local sandboxing.
  */
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import {
   type BashOperations,
@@ -25,6 +25,80 @@ import {
   type ReadOperations,
   type WriteOperations,
 } from "@mariozechner/pi-coding-agent";
+
+const EXIT_STDIO_GRACE_MS = 100;
+
+function waitForChildProcess(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let exited = false;
+    let exitCode: number | null = null;
+    let postExitTimer: NodeJS.Timeout | undefined;
+    let stdoutEnded = child.stdout === null;
+    let stderrEnded = child.stderr === null;
+
+    const cleanup = () => {
+      if (postExitTimer) clearTimeout(postExitTimer);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      child.removeListener("close", onClose);
+      child.stdout?.removeListener("end", onStdoutEnd);
+      child.stderr?.removeListener("end", onStderrEnd);
+    };
+
+    const finalize = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolve(code);
+    };
+
+    const maybeFinalizeAfterExit = () => {
+      if (!exited || settled) return;
+      if (stdoutEnded && stderrEnded) finalize(exitCode);
+    };
+
+    const onStdoutEnd = () => {
+      stdoutEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onStderrEnd = () => {
+      stderrEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onError = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+    const onExit = (code: number | null) => {
+      exited = true;
+      exitCode = code;
+      maybeFinalizeAfterExit();
+      if (!settled) postExitTimer = setTimeout(() => finalize(code), EXIT_STDIO_GRACE_MS);
+    };
+    const onClose = (code: number | null) => finalize(code);
+
+    child.stdout?.once("end", onStdoutEnd);
+    child.stderr?.once("end", onStderrEnd);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+  });
+}
+
+function killProcessTree(child: ChildProcess): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid);
+    else child.kill();
+  } catch {
+    child.kill();
+  }
+}
 
 function sshExec(remote: string, command: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -89,30 +163,39 @@ function createRemoteBashOps(remote: string, remoteCwd: string, localCwd: string
       new Promise((resolve, reject) => {
         const cmd = `cd ${JSON.stringify(toRemotePath(cwd, remoteCwd, localCwd))} && ${command}`;
         const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", remote, cmd], {
+          detached: process.platform !== "win32",
           stdio: ["ignore", "pipe", "pipe"],
         });
         let timedOut = false;
-        const timer = timeout
-          ? setTimeout(() => {
-              timedOut = true;
-              child.kill();
-            }, timeout * 1000)
-          : undefined;
-        child.stdout.on("data", onData);
-        child.stderr.on("data", onData);
-        child.on("error", (err) => {
-          if (timer) clearTimeout(timer);
-          reject(err);
-        });
-        const onAbort = () => child.kill();
-        signal?.addEventListener("abort", onAbort, { once: true });
-        child.on("close", (code) => {
-          if (timer) clearTimeout(timer);
-          signal?.removeEventListener("abort", onAbort);
-          if (signal?.aborted) reject(new Error("aborted"));
-          else if (timedOut) reject(new Error(`timeout:${timeout}`));
-          else resolve({ exitCode: code });
-        });
+        let timeoutHandle: NodeJS.Timeout | undefined;
+
+        if (timeout !== undefined && timeout > 0) {
+          timeoutHandle = setTimeout(() => {
+            timedOut = true;
+            killProcessTree(child);
+          }, timeout * 1000);
+        }
+
+        child.stdout?.on("data", onData);
+        child.stderr?.on("data", onData);
+
+        const onAbort = () => killProcessTree(child);
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+
+        waitForChildProcess(child)
+          .then((code) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            signal?.removeEventListener("abort", onAbort);
+            if (signal?.aborted) reject(new Error("aborted"));
+            else if (timedOut) reject(new Error(`timeout:${timeout}`));
+            else resolve({ exitCode: code });
+          })
+          .catch((err) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            signal?.removeEventListener("abort", onAbort);
+            reject(err);
+          });
       }),
   };
 }

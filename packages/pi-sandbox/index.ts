@@ -66,7 +66,7 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { isIP, BlockList } from "node:net";
 import { homedir } from "node:os";
@@ -89,6 +89,80 @@ import { matchesKey, Key, truncateToWidth } from "@mariozechner/pi-tui";
 
 interface SandboxConfig extends SandboxRuntimeConfig {
   enabled?: boolean;
+}
+
+const EXIT_STDIO_GRACE_MS = 100;
+
+function waitForChildProcess(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let exited = false;
+    let exitCode: number | null = null;
+    let postExitTimer: NodeJS.Timeout | undefined;
+    let stdoutEnded = child.stdout === null;
+    let stderrEnded = child.stderr === null;
+
+    const cleanup = () => {
+      if (postExitTimer) clearTimeout(postExitTimer);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      child.removeListener("close", onClose);
+      child.stdout?.removeListener("end", onStdoutEnd);
+      child.stderr?.removeListener("end", onStderrEnd);
+    };
+
+    const finalize = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolve(code);
+    };
+
+    const maybeFinalizeAfterExit = () => {
+      if (!exited || settled) return;
+      if (stdoutEnded && stderrEnded) finalize(exitCode);
+    };
+
+    const onStdoutEnd = () => {
+      stdoutEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onStderrEnd = () => {
+      stderrEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onError = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+    const onExit = (code: number | null) => {
+      exited = true;
+      exitCode = code;
+      maybeFinalizeAfterExit();
+      if (!settled) postExitTimer = setTimeout(() => finalize(code), EXIT_STDIO_GRACE_MS);
+    };
+    const onClose = (code: number | null) => finalize(code);
+
+    child.stdout?.once("end", onStdoutEnd);
+    child.stderr?.once("end", onStderrEnd);
+    child.once("error", onError);
+    child.once("exit", onExit);
+    child.once("close", onClose);
+  });
+}
+
+function killProcessTree(child: ChildProcess): void {
+  if (!child.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-child.pid);
+    else child.kill();
+  } catch {
+    child.kill();
+  }
 }
 
 const DEFAULT_CONFIG: SandboxConfig = {
@@ -385,7 +459,7 @@ function createSandboxedBashOps(shellPath?: string): BashOperations {
         const child = spawn(shell, [...args, wrappedCommand], {
           cwd,
           env,
-          detached: true,
+          detached: process.platform !== "win32",
           stdio: ["ignore", "pipe", "pipe"],
         });
 
@@ -395,48 +469,30 @@ function createSandboxedBashOps(shellPath?: string): BashOperations {
         if (timeout !== undefined && timeout > 0) {
           timeoutHandle = setTimeout(() => {
             timedOut = true;
-            if (child.pid) {
-              try {
-                process.kill(-child.pid, "SIGKILL");
-              } catch {
-                child.kill("SIGKILL");
-              }
-            }
+            killProcessTree(child);
           }, timeout * 1000);
         }
 
         child.stdout?.on("data", onData);
         child.stderr?.on("data", onData);
 
-        child.on("error", (err) => {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          reject(err);
-        });
+        const onAbort = () => killProcessTree(child);
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
 
-        const onAbort = () => {
-          if (child.pid) {
-            try {
-              process.kill(-child.pid, "SIGKILL");
-            } catch {
-              child.kill("SIGKILL");
-            }
-          }
-        };
-
-        signal?.addEventListener("abort", onAbort, { once: true });
-
-        child.on("close", (code) => {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
-          signal?.removeEventListener("abort", onAbort);
-
-          if (signal?.aborted) {
-            reject(new Error("aborted"));
-          } else if (timedOut) {
-            reject(new Error(`timeout:${timeout}`));
-          } else {
-            resolve({ exitCode: code });
-          }
-        });
+        waitForChildProcess(child)
+          .then((code) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            signal?.removeEventListener("abort", onAbort);
+            if (signal?.aborted) reject(new Error("aborted"));
+            else if (timedOut) reject(new Error(`timeout:${timeout}`));
+            else resolve({ exitCode: code });
+          })
+          .catch((err) => {
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            signal?.removeEventListener("abort", onAbort);
+            reject(err);
+          });
       });
     },
   };
