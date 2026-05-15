@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "0.71.0",
+  "lastChangelogVersion": "0.74.0",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "minimal",
+  "defaultThinkingLevel": "off",
   "autocompleteMaxVisible": 3,
   "terminal": {
     "showTerminalProgress": true
@@ -17,5 +17,17 @@
     "npm:pi-intercom",
     "npm:pi-smart-fetch",
     "./packages/pi-sandbox"
+  ],
+  "skills": [
+    "~/repos/openstack-ai-style-guide/plugins/teim-review/skills",
+    "~/repos/agentic-workflows/.agents/skills",
+    "~/repos/jira-work/plugins/jira-work/skills"
+  ],
+  "enabledModels": [
+    "vertex-claude/sonnet",
+    "vertex-claude/opus",
+    "openai-codex/gpt-5.5",
+    "zai/glm-5.1",
+    "vertex-claude/haiku"
   ]
 }
