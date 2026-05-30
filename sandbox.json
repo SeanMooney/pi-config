@@ -64,7 +64,8 @@
       "~/go",
       "~/Library",
       "/Applications/Google Chrome.app",
-      "/System/Volumes/Data/Applications/Google Chrome.app"
+      "/System/Volumes/Data/Applications/Google Chrome.app",
+      "~/.config/pi/npm/node_modules/pi-subagents/skills/pi-subagents/SKILL.md"
     ],
     "allowWrite": [
       ".",

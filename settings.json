@@ -1,8 +1,8 @@
 {
-  "lastChangelogVersion": "0.74.0",
+  "lastChangelogVersion": "0.75.4",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "off",
+  "defaultThinkingLevel": "medium",
   "autocompleteMaxVisible": 3,
   "terminal": {
     "showTerminalProgress": true
@@ -12,11 +12,15 @@
   "theme": "dark",
   "sessionDir": "~/.local/state/pi/sessions",
   "packages": [
-    "npm:pi-mcp-adapter",
-    "npm:pi-subagents",
-    "npm:pi-intercom",
-    "npm:pi-smart-fetch",
-    "./packages/pi-sandbox"
+    "npm:pi-mcp-adapter@2.6.1",
+    "npm:pi-subagents@0.24.3",
+    "npm:pi-intercom@0.6.0",
+    "npm:pi-smart-fetch@0.3.5",
+    "./packages/pi-sandbox",
+    "npm:@juicesharp/rpiv-ask-user-question@1.15.0",
+    "npm:@juicesharp/rpiv-todo@1.15.0",
+    "npm:@juicesharp/rpiv-advisor@1.15.0",
+    "npm:pi-btw@0.4.0"
   ],
   "skills": [
     "~/repos/openstack-ai-style-guide/plugins/teim-review/skills",

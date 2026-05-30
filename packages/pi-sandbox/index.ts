@@ -64,7 +64,7 @@ import type {
   AgentToolResult,
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -84,8 +84,8 @@ import {
   getShellConfig,
   isToolCallEventType,
   SettingsManager,
-} from "@mariozechner/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { matchesKey, Key, truncateToWidth } from "@earendil-works/pi-tui";
 
 interface SandboxConfig extends SandboxRuntimeConfig {
   enabled?: boolean;
@@ -484,6 +484,7 @@ function createSandboxedBashOps(shellPath?: string): BashOperations {
           .then((code) => {
             if (timeoutHandle) clearTimeout(timeoutHandle);
             signal?.removeEventListener("abort", onAbort);
+            SandboxManager.cleanupAfterCommand();
             if (signal?.aborted) reject(new Error("aborted"));
             else if (timedOut) reject(new Error(`timeout:${timeout}`));
             else resolve({ exitCode: code });
@@ -491,6 +492,7 @@ function createSandboxedBashOps(shellPath?: string): BashOperations {
           .catch((err) => {
             if (timeoutHandle) clearTimeout(timeoutHandle);
             signal?.removeEventListener("abort", onAbort);
+            SandboxManager.cleanupAfterCommand();
             reject(err);
           });
       });
@@ -515,12 +517,9 @@ export default function (pi: ExtensionAPI) {
   let sandboxInitialized = false;
 
   function isSshModeActive(): boolean {
-    const sshFlag = pi.getFlag("ssh") as string | undefined;
-    if (sshFlag) return true;
-
-    // Be robust to extension load/order issues: the SSH extension owns the
-    // formal flag, but sandbox policy must still bypass remote tool calls even
-    // if that flag is registered later in startup.
+    // The SSH extension owns the formal --ssh flag. Sandbox policy still needs
+    // to bypass remote tool calls without depending on cross-extension flag
+    // registration order, so inspect argv directly.
     return process.argv.some(
       (arg, index, argv) => arg === "--ssh" || arg.startsWith("--ssh=") || argv[index - 1] === "--ssh",
     );

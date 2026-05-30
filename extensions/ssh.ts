@@ -14,7 +14,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
   createBashTool,
@@ -24,7 +24,7 @@ import {
   type EditOperations,
   type ReadOperations,
   type WriteOperations,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const EXIT_STDIO_GRACE_MS = 100;
 

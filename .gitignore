@@ -1,4 +1,17 @@
 auth.json
+.env
+.env.*
+.mcp.json
+.bash_profile
+.bashrc
+.envrc
+.gitconfig
+.profile
+.zprofile
+.zshrc
+.claude/
+.idea/
+.vscode/
 sessions/
 git/
 npm/
