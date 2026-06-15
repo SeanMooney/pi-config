@@ -31,6 +31,7 @@
       "*.atlassian.net",
       "atlassian.com",
       "*.atlassian.com",
+      "*.redhat.com",
       "10.0.0.0/8",
       "172.16.0.0/12",
       "192.168.0.0/16"
@@ -46,6 +47,7 @@
     "allowRead": [
       ".",
       "~/repos",
+      "~/.ansible/collections",
       "/nix/store",
       "~/.config/pi/AGENTS.md",
       "~/.config/acli",
@@ -73,6 +75,7 @@
       "/run/user/1000/bus",
       "/run/user/1000/keyring",
       "~/repos",
+      "~/.ansible/collections",
       "/tmp",
       "/private/tmp",
       "~/.cache",
