@@ -27,6 +27,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const EXIT_STDIO_GRACE_MS = 100;
+const SSH_MODE_ENV = "PI_SSH_MODE_ACTIVE";
+const SSH_REMOTE_ENV = "PI_SSH_REMOTE";
+const SSH_CWD_ENV = "PI_SSH_CWD";
 
 function waitForChildProcess(child: ChildProcess): Promise<number | null> {
   return new Promise((resolve, reject) => {
@@ -206,6 +209,13 @@ function parseSshArg(arg: string): { remote: string; remoteCwd?: string } {
   return { remote: match[1], remoteCwd: match[2] };
 }
 
+function argvHasSshFlag(): boolean {
+  return process.argv.some(
+    (arg, index, argv) =>
+      arg === "--ssh" || arg.startsWith("--ssh=") || argv[index - 1] === "--ssh",
+  );
+}
+
 async function resolveRemoteCwd(remote: string, requestedCwd?: string): Promise<string> {
   if (!requestedCwd) return (await sshExec(remote, "pwd")).toString().trim();
   return (await sshExec(remote, `cd ${JSON.stringify(requestedCwd)} && pwd`)).toString().trim();
@@ -214,6 +224,8 @@ async function resolveRemoteCwd(remote: string, requestedCwd?: string): Promise<
 export default function sshExtension(pi: ExtensionAPI) {
   pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
   pi.registerFlag("ssh-cwd", { description: "Remote working directory for --ssh", type: "string" });
+
+  if (argvHasSshFlag() || process.env[SSH_REMOTE_ENV]) process.env[SSH_MODE_ENV] = "1";
 
   const localCwd = process.cwd();
   let resolvedSsh: { remote: string; remoteCwd: string } | null = null;
@@ -263,15 +275,20 @@ export default function sshExtension(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const arg = pi.getFlag("ssh") as string | undefined;
-    if (!arg) return;
+    const inheritedRemote = process.env[SSH_REMOTE_ENV];
+    if (!arg && !inheritedRemote) return;
 
     sshRequested = true;
-    const parsed = parseSshArg(arg);
+    process.env[SSH_MODE_ENV] = "1";
+    const parsed = arg ? parseSshArg(arg) : { remote: inheritedRemote! };
     const sshCwd = pi.getFlag("ssh-cwd") as string | undefined;
+    const inheritedCwd = process.env[SSH_CWD_ENV];
 
     try {
-      const remoteCwd = await resolveRemoteCwd(parsed.remote, sshCwd ?? parsed.remoteCwd);
+      const remoteCwd = await resolveRemoteCwd(parsed.remote, sshCwd ?? parsed.remoteCwd ?? inheritedCwd);
       resolvedSsh = { remote: parsed.remote, remoteCwd };
+      process.env[SSH_REMOTE_ENV] = resolvedSsh.remote;
+      process.env[SSH_CWD_ENV] = resolvedSsh.remoteCwd;
       sshStartupError = null;
       registerRemoteTools();
 

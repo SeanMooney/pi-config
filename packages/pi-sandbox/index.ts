@@ -324,12 +324,36 @@ function createNetworkAskCallback(allowedDomains: string[]): SandboxAskCallback 
 
 // ── Output analysis ───────────────────────────────────────────────────────────
 
-/** Extract a path from a bash "Operation not permitted" OS sandbox error. */
+/** Extract a path from a bash write-related "Operation not permitted" OS sandbox error. */
 function extractBlockedWritePath(output: string): string | null {
-  const match = output.match(
-    /(?:\/bin\/bash|bash|sh): (?:line \d: )?(\/[^\s:]+): Operation not permitted/,
-  );
-  return match ? match[1] : null;
+  const patterns = [
+    // Preserve the existing classification for shell-level failures, which
+    // commonly come from redirection or attempted writes rather than readers
+    // like cat, ls, or stat.
+    /(?:\/bin\/bash|bash|sh): (?:line \d+: )?(\/[^\s:]+): Operation not permitted/,
+    /(?:cannot (?:create|touch|mkdir|remove)|failed to (?:open|create|write)).*?["'](\/[^"']+)["'].*Operation not permitted/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = output.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/** Extract a path from a bash read-related "Operation not permitted" OS sandbox error. */
+function extractBlockedReadPath(output: string): string | null {
+  const patterns = [
+    /(?:^|\n)(?:cat|head|tail|grep|rg|sed|awk|file): (\/[^\s:]+): Operation not permitted/,
+    /(?:^|\n)(?:ls|find|du|stat): .*?["'](\/[^"']+)["'].*Operation not permitted/,
+    /(?:^|\n)(?:ls|find|du|stat): (\/[^\s:]+): Operation not permitted/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = output.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
 }
 
 // ── Path pattern matching ─────────────────────────────────────────────────────
@@ -519,9 +543,20 @@ export default function (pi: ExtensionAPI) {
   function isSshModeActive(): boolean {
     // The SSH extension owns the formal --ssh flag. Sandbox policy still needs
     // to bypass remote tool calls without depending on cross-extension flag
-    // registration order, so inspect argv directly.
+    // registration order, so inspect argv directly. Also check the registered
+    // flag and an environment marker for cases where another extension has
+    // already resolved SSH mode by the time this event handler runs.
+    if (process.env.PI_SSH_MODE_ACTIVE === "1") return true;
+
+    try {
+      if (pi.getFlag("ssh")) return true;
+    } catch {
+      // The SSH extension may not have registered the flag yet.
+    }
+
     return process.argv.some(
-      (arg, index, argv) => arg === "--ssh" || arg.startsWith("--ssh=") || argv[index - 1] === "--ssh",
+      (arg, index, argv) =>
+        arg === "--ssh" || arg.startsWith("--ssh=") || argv[index - 1] === "--ssh",
     );
   }
 
@@ -824,7 +859,18 @@ export default function (pi: ExtensionAPI) {
     async execute(id, params, signal, onUpdate, ctx) {
       const runBash = () => {
         if (isSshModeActive()) {
-          return localBash.execute(id, params, signal, onUpdate, ctx);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  "Sandbox bash wrapper is disabled because --ssh is active; " +
+                  "the SSH extension should provide the remote bash tool.",
+              },
+            ],
+            details: {},
+            isError: true,
+          };
         }
         if (!sandboxEnabled || !sandboxInitialized) {
           return localBash.execute(id, params, signal, onUpdate, ctx);
@@ -854,25 +900,25 @@ export default function (pi: ExtensionAPI) {
         };
       }
 
-      // Post-execution: detect OS-level write block and offer to allow.
+      // Post-execution: detect OS-level filesystem blocks and offer to allow.
       if (sandboxEnabled && sandboxInitialized && ctx?.hasUI) {
         const outputText = result.content
           .filter((c: any) => c.type === "text")
           .map((c: any) => c.text)
           .join("\n");
 
-        const blockedPath = extractBlockedWritePath(outputText);
-        if (blockedPath) {
-          const choice = await promptWriteBlock(ctx, blockedPath);
+        const blockedWritePath = extractBlockedWritePath(outputText);
+        if (blockedWritePath) {
+          const choice = await promptWriteBlock(ctx, blockedWritePath);
           if (choice !== "abort") {
-            await applyWriteChoice(choice, blockedPath, ctx.cwd);
+            await applyWriteChoice(choice, blockedWritePath, ctx.cwd);
 
             // Check if denyWrite would still block it even after allowing.
             const config = loadConfig(ctx.cwd);
             const { projectPath, globalPath } = getConfigPaths(ctx.cwd);
-            if (matchesPattern(blockedPath, config.filesystem?.denyWrite ?? [])) {
+            if (matchesPattern(blockedWritePath, config.filesystem?.denyWrite ?? [])) {
               ctx.ui.notify(
-                `⚠️ "${blockedPath}" was added to allowWrite, but it is also in denyWrite and will remain blocked.\n` +
+                `⚠️ "${blockedWritePath}" was added to allowWrite, but it is also in denyWrite and will remain blocked.\n` +
                   `Check denyWrite in:\n  ${projectPath}\n  ${globalPath}`,
                 "warning",
               );
@@ -883,7 +929,26 @@ export default function (pi: ExtensionAPI) {
               content: [
                 {
                   type: "text",
-                  text: `\n--- Write access granted for "${blockedPath}", retrying ---\n`,
+                  text: `\n--- Write access granted for "${blockedWritePath}", retrying ---\n`,
+                },
+              ],
+              details: {},
+            });
+            return runBash();
+          }
+        }
+
+        const blockedReadPath = extractBlockedReadPath(outputText);
+        if (blockedReadPath) {
+          const choice = await promptReadBlock(ctx, blockedReadPath);
+          if (choice !== "abort") {
+            await applyReadChoice(choice, blockedReadPath, ctx.cwd);
+
+            onUpdate?.({
+              content: [
+                {
+                  type: "text",
+                  text: `\n--- Read access granted for "${blockedReadPath}", retrying ---\n`,
                 },
               ],
               details: {},
