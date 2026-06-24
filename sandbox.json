@@ -47,6 +47,7 @@
     "allowRead": [
       ".",
       "~/repos",
+      "~/.ansible",
       "~/.ansible/collections",
       "/nix/store",
       "~/.config/pi/AGENTS.md",
@@ -75,6 +76,7 @@
       "/run/user/1000/bus",
       "/run/user/1000/keyring",
       "~/repos",
+      "~/.ansible",
       "~/.ansible/collections",
       "/tmp",
       "/private/tmp",
