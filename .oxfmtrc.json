@@ -1,0 +1,37 @@
+{
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/package-lock.json",
+    "**/auth.json",
+    "**/mcp-cache.json",
+    "**/mcp-npx-cache.json",
+    "**/settings.json",
+    "**/sandbox.json",
+    "**/sessions/**",
+    "**/state/**",
+    "**/tmp/**",
+    "**/.tmp/**",
+    "**/.git/**",
+    "*.jsonl",
+    "*.log"
+  ],
+  "overrides": [
+    {
+      "files": ["*.md"],
+      "options": {
+        "printWidth": 80,
+        "proseWrap": "always"
+      }
+    },
+    {
+      "files": ["*.markdown"],
+      "options": {
+        "printWidth": 80,
+        "proseWrap": "always"
+      }
+    }
+  ]
+}

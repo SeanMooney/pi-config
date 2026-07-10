@@ -1,0 +1,98 @@
+# Markdownlint configuration for this Pi agent configuration repository.
+#
+# Keep this file to intentional repository conventions. The canonical human
+# style policy, including the 80-column Markdown limit, is docs/style.md.
+
+# All enabled rules are deterministic checks unless explicitly disabled below.
+default: true
+
+# MD003/heading-style - Use # style headings throughout repository docs.
+MD003:
+  style: "atx"
+
+# MD004/ul-style - Use '-' for unordered list markers.
+MD004:
+  style: "dash"
+
+# MD007/ul-indent - Use two spaces for nested unordered lists.
+MD007:
+  indent: 2
+
+# MD013/line-length - Keep prose and headings within 80 columns; do not wrap
+# code blocks or tables just to satisfy the linter. Markdownlint preserves its
+# standard exception for indivisible long URLs.
+MD013:
+  line_length: 80
+  heading_line_length: 80
+  code_blocks: false
+  tables: false
+
+# MD024/no-duplicate-heading - Allow repeated section names in different
+# parents, but not duplicate sibling headings.
+MD024:
+  siblings_only: true
+
+# MD025/single-title - Do not treat a frontmatter title as a document heading.
+MD025:
+  front_matter_title: ""
+
+# MD034/no-bare-urls - Bare URLs are acceptable in reference documentation.
+MD034: false
+
+# MD035/hr-style - Use --- for horizontal rules.
+MD035:
+  style: "---"
+
+# MD040/fenced-code-language - Require a language or text info string, with no
+# extra metadata after the language.
+MD040:
+  language_only: true
+
+# MD044/proper-names - Enforce repository and tool capitalization in prose.
+MD044:
+  names:
+    - OpenStack
+    - OpenInfra
+    - OpenDev
+    - Agent Skills
+    - agent skills
+    - Codex
+    - Claude Code
+    - Gerrit
+    - Zuul
+    - openstack-discuss
+    - Pi
+    - Oxfmt
+    - markdownlint
+    - markdownlint-cli2
+    - npm
+    - pre-commit
+    - tox
+  code_blocks: false
+  html_elements: false
+
+# MD046/code-block-style - Use fenced code blocks instead of indented blocks.
+MD046:
+  style: "fenced"
+
+# MD048/code-fence-style - Use backtick fences.
+MD048:
+  style: "backtick"
+
+# MD049/emphasis-style - Use * for emphasis.
+MD049:
+  style: "asterisk"
+
+# MD050/strong-style - Use ** for strong emphasis.
+MD050:
+  style: "asterisk"
+
+# MD055/table-pipe-style - Use leading and trailing pipes on table rows.
+MD055:
+  style: "leading_and_trailing"
+
+# MD060/table-column-style - Keep tables compact while aligning the delimiter
+# row with the header.
+MD060:
+  style: "compact"
+  aligned_delimiter: true

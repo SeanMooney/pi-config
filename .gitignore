@@ -14,7 +14,8 @@ auth.json
 .vscode/
 sessions/
 git/
-npm/
+npm/node_modules/
+npm/.package-lock.json
 node_modules/
 bin/
 tools/

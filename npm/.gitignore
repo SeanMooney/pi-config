@@ -1,0 +1,5 @@
+# Keep npm installation artifacts out of the config repository. This leaves the
+# shared .gitignore, package.json, and package-lock.json tracked.
+node_modules/
+.package-lock.json
+npm-debug.log*
