@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { getModel, streamAnthropic, type Context, type Model, type SimpleStreamOptions, type ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { AnthropicOptions, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { getModel, streamAnthropic } from "@earendil-works/pi-ai/compat";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import { GoogleAuth } from "google-auth-library";
 
@@ -7,351 +8,670 @@ const PROVIDER = "vertex-claude";
 const AUTH_MARKER = "gcp-vertex-credentials";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
-const DISCOVERY_TIMEOUT_MS = 10_000;
+const DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
+type Family = "opus" | "sonnet" | "haiku" | "fable";
+type Lifecycle = "active" | "deprecated" | "custom";
 type ReasoningLevel = NonNullable<SimpleStreamOptions["reasoning"]>;
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
-interface VertexClaudeModel {
-	id: string;
-	name: string;
-	family: "opus" | "sonnet" | "haiku";
-	major: number;
-	minor: number;
-	aliasTarget?: string;
+export interface VertexClaudeModel {
+  id: string;
+  name: string;
+  family?: Family;
+  major: number;
+  minor: number;
+  lifecycle: Lifecycle;
+  /** Explicitly controls manifest aliases; never infer lifecycle from a version. */
+  aliasEligible: boolean;
+  aliasTarget?: string;
 }
 
 function env(name: string): string | undefined {
-	const value = process.env[name]?.trim();
-	return value ? value : undefined;
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
 }
 
 function resolveProjectId(): string | undefined {
-	return env("ANTHROPIC_VERTEX_PROJECT_ID") ?? env("GOOGLE_CLOUD_PROJECT") ?? env("GCLOUD_PROJECT");
+  return env("ANTHROPIC_VERTEX_PROJECT_ID") ?? env("GOOGLE_CLOUD_PROJECT") ?? env("GCLOUD_PROJECT");
 }
 
 function resolveRegion(): string | undefined {
-	return env("CLOUD_ML_REGION") ?? env("GOOGLE_CLOUD_LOCATION");
+  return env("CLOUD_ML_REGION") ?? env("GOOGLE_CLOUD_LOCATION");
 }
 
 function vertexBaseUrl(region: string): string {
-	const override = env("ANTHROPIC_VERTEX_BASE_URL");
-	if (override) return override;
-	if (region === "global") return "https://aiplatform.googleapis.com/v1";
-	if (region === "us") return "https://aiplatform.us.rep.googleapis.com/v1";
-	if (region === "eu") return "https://aiplatform.eu.rep.googleapis.com/v1";
-	return `https://${region}-aiplatform.googleapis.com/v1`;
+  const override = env("ANTHROPIC_VERTEX_BASE_URL");
+  if (override) return override;
+  if (region === "global") return "https://aiplatform.googleapis.com/v1";
+  if (region === "us") return "https://aiplatform.us.rep.googleapis.com/v1";
+  if (region === "eu") return "https://aiplatform.eu.rep.googleapis.com/v1";
+  return `https://${region}-aiplatform.googleapis.com/v1`;
 }
 
 function normalizeModelId(raw: string): string | undefined {
-	const trimmed = raw.trim();
-	if (!trimmed) return undefined;
-	const lastSlash = trimmed.lastIndexOf("/");
-	return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
-}
-
-function parseClaudeModel(id: string, displayName?: string): VertexClaudeModel | undefined {
-	const haystack = `${id} ${displayName ?? ""}`.toLowerCase();
-	const family = haystack.includes("opus")
-		? "opus"
-		: haystack.includes("sonnet")
-			? "sonnet"
-			: haystack.includes("haiku")
-				? "haiku"
-				: undefined;
-	if (!family) return undefined;
-
-	const familyIndex = haystack.indexOf(family);
-	const afterFamily = familyIndex >= 0 ? haystack.slice(familyIndex + family.length) : haystack;
-	const beforeFamily = familyIndex >= 0 ? haystack.slice(0, familyIndex) : haystack;
-	const versionMatch =
-		afterFamily.match(/(?:^|[-\s])([0-9]+)(?:[.-]([0-9]+))?/) ??
-		beforeFamily.match(/(?:claude[-\s])([0-9]+)(?:[.-]([0-9]+))?/);
-	if (!versionMatch) return undefined;
-
-	return {
-		id,
-		name: displayName?.trim() || humanizeModelName(id),
-		family,
-		major: Number(versionMatch[1]),
-		minor: versionMatch[2] ? Number(versionMatch[2]) : 0,
-	};
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const lastSlash = trimmed.lastIndexOf("/");
+  return lastSlash === -1 ? trimmed : trimmed.slice(lastSlash + 1);
 }
 
 function humanizeModelName(id: string): string {
-	return id
-		.replace(/@.*$/, "")
-		.split("-")
-		.map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
-		.join(" ");
+  return id
+    .replace(/@.*$/, "")
+    .split("-")
+    .map((part) => (part ? part[0].toUpperCase() + part.slice(1) : part))
+    .join(" ");
 }
 
-function versionScore(model: VertexClaudeModel): number {
-	return model.major * 1_000_000_000_000 + model.minor * 1_000_000_000 + lexicalDateScore(model.id);
+const FAMILY_FIRST_CLAUDE_MODEL_RE =
+  /^claude-(?<family>opus|sonnet|haiku|fable)-(?<major>\d+)(?:-(?<minor>\d+))?(?:@\d{8})?$/i;
+const HISTORICAL_CLAUDE_MODEL_RE = new RegExp(
+  [
+    "^claude-(?<major>\\d+)(?:-(?<minor>\\d+))?-",
+    "(?<family>opus|sonnet|haiku|fable)(?:-v\\d+)?(?:@\\d{8})?$",
+  ].join(""),
+  "i",
+);
+
+export function parseClaudeModel(id: string): VertexClaudeModel | undefined {
+  // Vertex IDs are either family-first (claude-opus-4-8) or the historical
+  // version-first form (claude-3-5-haiku), optionally with an eight-digit
+  // publisher revision. Do not accept arbitrary claude-* strings as overrides.
+  const match = id.match(FAMILY_FIRST_CLAUDE_MODEL_RE) ?? id.match(HISTORICAL_CLAUDE_MODEL_RE);
+  if (!match?.groups) return undefined;
+  const family = match.groups.family.toLowerCase() as Family;
+
+  return {
+    id,
+    name: humanizeModelName(id),
+    family,
+    major: Number(match.groups.major ?? match.groups.historicalMajor),
+    minor: Number(match.groups.minor ?? match.groups.historicalMinor ?? 0),
+    lifecycle: "custom",
+    aliasEligible: true,
+  };
 }
 
 function lexicalDateScore(id: string): number {
-	const match = id.match(/(?:@|-)(20\d{6})$/);
-	return match ? Number(match[1]) : 0;
+  const match = id.match(/@([0-9]{8})$/);
+  return match ? Number(match[1]) : 0;
 }
 
-// Docs-derived fallback list for startup when publisher-model discovery is disabled or unavailable.
-// Source: https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude
-// Projects without access to a listed model can set VERTEX_CLAUDE_MODELS to an explicit known-good list.
-const FALLBACK_MODELS: VertexClaudeModel[] = [
-	{ id: "claude-opus-4-7", name: "Claude Opus 4.7", family: "opus", major: 4, minor: 7 },
-	{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", family: "sonnet", major: 4, minor: 6 },
-	{ id: "claude-opus-4-6", name: "Claude Opus 4.6", family: "opus", major: 4, minor: 6 },
-	{ id: "claude-opus-4-5", name: "Claude Opus 4.5", family: "opus", major: 4, minor: 5 },
-	{ id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", family: "sonnet", major: 4, minor: 5 },
-	{ id: "claude-opus-4-1", name: "Claude Opus 4.1", family: "opus", major: 4, minor: 1 },
-	{ id: "claude-haiku-4-5", name: "Claude Haiku 4.5", family: "haiku", major: 4, minor: 5 },
-	{ id: "claude-opus-4", name: "Claude Opus 4", family: "opus", major: 4, minor: 0 },
-	{ id: "claude-sonnet-4", name: "Claude Sonnet 4", family: "sonnet", major: 4, minor: 0 },
+function versionScore(model: VertexClaudeModel): number {
+  return model.major * 1_000_000_000_000 + model.minor * 1_000_000_000 + lexicalDateScore(model.id);
+}
+
+// Documented usable Vertex AI publisher model IDs, maintained from:
+// https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude
+// https://docs.anthropic.com/en/docs/about-claude/models/overview
+// Retired models are deliberately absent. Deprecated-but-not-retired entries remain
+// registered for existing Vertex users, but never become aliases.
+export const DOCUMENTED_VERTEX_MODELS: readonly VertexClaudeModel[] = [
+  {
+    id: "claude-opus-4-8",
+    name: "Claude Opus 4.8",
+    family: "opus",
+    major: 4,
+    minor: 8,
+    lifecycle: "active",
+    aliasEligible: true,
+  },
+  {
+    id: "claude-opus-4-7",
+    name: "Claude Opus 4.7",
+    family: "opus",
+    major: 4,
+    minor: 7,
+    lifecycle: "active",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-opus-4-6",
+    name: "Claude Opus 4.6",
+    family: "opus",
+    major: 4,
+    minor: 6,
+    lifecycle: "active",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-opus-4-5@20251101",
+    name: "Claude Opus 4.5",
+    family: "opus",
+    major: 4,
+    minor: 5,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-opus-4-1@20250805",
+    name: "Claude Opus 4.1",
+    family: "opus",
+    major: 4,
+    minor: 1,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-opus-4@20250514",
+    name: "Claude Opus 4",
+    family: "opus",
+    major: 4,
+    minor: 0,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    family: "sonnet",
+    major: 5,
+    minor: 0,
+    lifecycle: "active",
+    aliasEligible: true,
+  },
+  {
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
+    family: "sonnet",
+    major: 4,
+    minor: 6,
+    lifecycle: "active",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-sonnet-4-5@20250929",
+    name: "Claude Sonnet 4.5",
+    family: "sonnet",
+    major: 4,
+    minor: 5,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-sonnet-4@20250514",
+    name: "Claude Sonnet 4",
+    family: "sonnet",
+    major: 4,
+    minor: 0,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-haiku-4-5@20251001",
+    name: "Claude Haiku 4.5",
+    family: "haiku",
+    major: 4,
+    minor: 5,
+    lifecycle: "active",
+    aliasEligible: true,
+  },
+  {
+    id: "claude-3-5-haiku@20241022",
+    name: "Claude Haiku 3.5",
+    family: "haiku",
+    major: 3,
+    minor: 5,
+    lifecycle: "deprecated",
+    aliasEligible: false,
+  },
+  {
+    id: "claude-fable-5",
+    name: "Claude Fable 5",
+    family: "fable",
+    major: 5,
+    minor: 0,
+    lifecycle: "active",
+    aliasEligible: true,
+  },
 ];
 
-function modelsFromEnv(): VertexClaudeModel[] {
-	const configured = env("VERTEX_CLAUDE_MODELS");
-	if (!configured) return [];
-	return configured
-		.split(",")
-		.map((s) => normalizeModelId(s))
-		.filter((s): s is string => Boolean(s))
-		.map((id) => parseClaudeModel(id))
-		.filter((m): m is VertexClaudeModel => Boolean(m));
+const manifestById = new Map(DOCUMENTED_VERTEX_MODELS.map((model) => [model.id, model]));
+
+export function modelsFromEnv(): VertexClaudeModel[] {
+  const raw = process.env.VERTEX_CLAUDE_MODELS;
+  if (raw === undefined) return [];
+  if (!raw.trim())
+    throw new Error(
+      "VERTEX_CLAUDE_MODELS is set but empty; unset it to use the Vertex Claude manifest.",
+    );
+  return raw.split(",").map((value) => {
+    const id = normalizeModelId(value);
+    if (!id) throw new Error("VERTEX_CLAUDE_MODELS contains an empty model ID.");
+    const model = manifestById.get(id) ?? parseClaudeModel(id);
+    if (!model) throw new Error(`Invalid Vertex Claude model ID in VERTEX_CLAUDE_MODELS: ${id}`);
+    return model;
+  });
 }
 
-async function discoverModels(projectId: string | undefined, region: string | undefined): Promise<VertexClaudeModel[]> {
-	if (!projectId || !region || env("VERTEX_CLAUDE_DISABLE_DISCOVERY") === "1") return [];
-
-	try {
-		return await withTimeout(discoverModelsInner(projectId, region), DISCOVERY_TIMEOUT_MS);
-	} catch (error) {
-		debugLog("model discovery failed", error);
-		return [];
-	}
+function dedupe(models: readonly VertexClaudeModel[]): VertexClaudeModel[] {
+  const byId = new Map<string, VertexClaudeModel>();
+  for (const model of models) byId.set(model.id, model);
+  return [...byId.values()].sort(
+    (a, b) => versionScore(b) - versionScore(a) || a.id.localeCompare(b.id),
+  );
 }
 
-async function discoverModelsInner(projectId: string, region: string): Promise<VertexClaudeModel[]> {
-	const auth = new GoogleAuth({ scopes: "https://www.googleapis.com/auth/cloud-platform" });
-	const client = await auth.getClient();
-	const headers = await client.getRequestHeaders();
-	const url = `${vertexBaseUrl(region)}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(region)}/publishers/anthropic/models`;
-	const response = await fetch(url, {
-		headers: headers as HeadersInit,
-		signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
-	});
-	if (!response.ok) return [];
-
-	const payload = (await response.json()) as {
-		publisherModels?: Array<{ name?: string; displayName?: string; versionId?: string }>;
-		models?: Array<{ name?: string; displayName?: string; versionId?: string }>;
-	};
-	const rows = payload.publisherModels ?? payload.models ?? [];
-	return rows
-		.map((row) => ({
-			id: normalizeModelId(row.name ?? row.versionId ?? ""),
-			displayName: row.displayName,
-		}))
-		.filter((item): item is { id: string; displayName: string | undefined } => Boolean(item.id))
-		.map(({ id, displayName }) => parseClaudeModel(id, displayName))
-		.filter((m): m is VertexClaudeModel => Boolean(m));
+export function addAliases(
+  models: readonly VertexClaudeModel[],
+  manifestMode: boolean,
+): VertexClaudeModel[] {
+  const result = [...models];
+  for (const family of ["opus", "sonnet", "haiku", "fable"] as const) {
+    const candidates = models.filter(
+      (model) => model.family === family && (!manifestMode || model.aliasEligible),
+    );
+    const best = candidates.sort(
+      (a, b) => versionScore(b) - versionScore(a) || a.id.localeCompare(b.id),
+    )[0];
+    if (!best) continue;
+    const displayFamily = `${family[0].toUpperCase()}${family.slice(1)}`;
+    for (const id of [family, `claude-${family}`]) {
+      result.push({
+        ...best,
+        id,
+        name: `Claude ${displayFamily} (latest: ${best.id})`,
+        aliasTarget: best.id,
+      });
+    }
+  }
+  return result;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const timeout = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
-		promise.then(
-			(value) => {
-				clearTimeout(timeout);
-				resolve(value);
-			},
-			(error) => {
-				clearTimeout(timeout);
-				reject(error);
-			},
-		);
-	});
-}
-
-function debugLog(message: string, error?: unknown): void {
-	if (env("VERTEX_CLAUDE_DEBUG") !== "1") return;
-	const suffix = error instanceof Error ? `: ${error.message}` : error === undefined ? "" : `: ${String(error)}`;
-	console.warn(`[vertex-claude] ${message}${suffix}`);
-}
-
-function dedupe(models: VertexClaudeModel[]): VertexClaudeModel[] {
-	const byId = new Map<string, VertexClaudeModel>();
-	for (const model of models) byId.set(model.id, model);
-	return [...byId.values()].sort((a, b) => versionScore(b) - versionScore(a) || a.id.localeCompare(b.id));
-}
-
-function currentMajorModels(models: VertexClaudeModel[]): VertexClaudeModel[] {
-	if (models.length === 0) return [];
-	const currentMajor = Math.max(...models.map((m) => m.major));
-	return models.filter((m) => m.major === currentMajor);
-}
-
-function addAliases(models: VertexClaudeModel[]): VertexClaudeModel[] {
-	const result = [...models];
-	for (const family of ["opus", "sonnet", "haiku"] as const) {
-		const best = models.filter((m) => m.family === family).sort((a, b) => versionScore(b) - versionScore(a))[0];
-		if (!best) continue;
-		result.push({
-			...best,
-			id: family,
-			name: `Claude ${family[0].toUpperCase()}${family.slice(1)} (latest: ${best.id})`,
-			aliasTarget: best.id,
-		});
-		result.push({
-			...best,
-			id: `claude-${family}`,
-			name: `Claude ${family[0].toUpperCase()}${family.slice(1)} (latest: ${best.id})`,
-			aliasTarget: best.id,
-		});
-	}
-	return result;
-}
-
-function anthropicCatalogModel(modelId: string): { thinkingLevelMap?: ThinkingLevelMap } | undefined {
-	const strippedId = modelId.replace(/@.*$/, "");
-	const candidateIds = strippedId === modelId ? [modelId] : [modelId, strippedId];
-	const lookup = getModel as (provider: string, modelId: string) => { thinkingLevelMap?: ThinkingLevelMap } | undefined;
-	for (const candidateId of candidateIds) {
-		const model = lookup("anthropic", candidateId);
-		if (model) return model;
-	}
-	return undefined;
-}
-
-function anthropicThinkingLevelMap(modelId: string): ThinkingLevelMap | undefined {
-	return anthropicCatalogModel(modelId)?.thinkingLevelMap;
+function anthropicCatalogModel(modelId: string): Model<"anthropic-messages"> | undefined {
+  const baseId = modelId.replace(/@.*$/, "");
+  const catalog = getModel("anthropic", baseId as never);
+  return catalog?.api === "anthropic-messages" ? catalog : undefined;
 }
 
 function toPiModel(model: VertexClaudeModel) {
-	// Inherit thinkingLevelMap from Pi's built-in Anthropic catalog so upstream
-	// maintenance of model capabilities (e.g. xhigh support) flows through
-	// automatically. Alias models delegate to their target's map.
-	const lookupId = model.aliasTarget ?? model.id;
-	return {
-		id: model.id,
-		name: model.name,
-		reasoning: true,
-		thinkingLevelMap: anthropicThinkingLevelMap(lookupId),
-		input: ["text", "image"] as ("text" | "image")[],
-		contextWindow: DEFAULT_CONTEXT_WINDOW,
-		maxTokens: DEFAULT_MAX_TOKENS,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-	};
+  const catalog = anthropicCatalogModel(model.aliasTarget ?? model.id);
+  // The host catalog is authoritative whenever it recognizes the base model ID.
+  // This retains Vertex's exact request ID while inheriting Pi's continuously
+  // updated compat, thinking, input, cost, context, and output metadata.
+  return {
+    id: model.id,
+    name: model.name,
+    reasoning: catalog?.reasoning ?? true,
+    thinkingLevelMap: catalog?.thinkingLevelMap,
+    input: catalog?.input ?? (["text", "image"] as ("text" | "image")[]),
+    cost: catalog?.cost ?? DEFAULT_COST,
+    contextWindow: catalog?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: catalog?.maxTokens ?? DEFAULT_MAX_TOKENS,
+    compat: catalog?.compat,
+  };
 }
 
-function effortForReasoning(level: ReasoningLevel, modelId: string): AnthropicEffort {
-	// Prefer Pi's built-in Anthropic catalog for effort values — this keeps
-	// model-specific quirks (e.g. opus-4-6 xhigh→max, opus-4-7 xhigh→xhigh)
-	// maintained upstream rather than duplicated here.
-	const mapped = anthropicThinkingLevelMap(modelId)?.[level];
-	if (typeof mapped === "string") return mapped as AnthropicEffort;
-	switch (level) {
-		case "minimal":
-		case "low":
-			return "low";
-		case "medium":
-			return "medium";
-		case "high":
-		case "xhigh":
-			return "high";
-		default:
-			return "medium";
-	}
+function effortForReasoning(
+  level: ReasoningLevel,
+  model: Model<"anthropic-messages">,
+): AnthropicEffort {
+  const mapped = model.thinkingLevelMap?.[level];
+  if (typeof mapped === "string") return mapped as AnthropicEffort;
+  switch (level) {
+    case "minimal":
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+    case "xhigh":
+    default:
+      return "high";
+  }
 }
 
-function thinkingBudget(level: ReasoningLevel): number {
-	switch (level) {
-		case "minimal":
-			return 1_024;
-		case "low":
-			return 4_096;
-		case "medium":
-			return 8_192;
-		case "xhigh":
-			return 32_768;
-		case "high":
-		default:
-			return 16_384;
-	}
+function legacyThinkingBudget(
+  level: ReasoningLevel,
+  options: SimpleStreamOptions | undefined,
+): number {
+  const budgets = {
+    minimal: 1024,
+    low: 2048,
+    medium: 8192,
+    high: 16384,
+    ...options?.thinkingBudgets,
+  };
+  const normalizedLevel = level === "xhigh" || level === "max" ? "high" : level;
+  return budgets[normalizedLevel];
 }
 
-function maxTokensForThinking(model: Model<any>, options: SimpleStreamOptions | undefined, budget: number): number {
-	const defaultMaxTokens = Math.floor(model.maxTokens / 3);
-	const requestedMaxTokens = options?.maxTokens ?? defaultMaxTokens;
-	return Math.min(model.maxTokens, Math.max(requestedMaxTokens, budget + 1_024));
+function legacyMaxTokens(
+  model: Model<"anthropic-messages">,
+  options: SimpleStreamOptions | undefined,
+  budget: number,
+): number {
+  // Mirrors Pi's public simple-stream behavior: reserve 1K output tokens and
+  // expand an explicit output cap by the legacy thinking budget where possible.
+  const base = options?.maxTokens ?? model.maxTokens;
+  const maxTokens =
+    options?.maxTokens === undefined ? model.maxTokens : Math.min(base + budget, model.maxTokens);
+  return Math.min(model.maxTokens, Math.max(1, maxTokens));
 }
 
-export default async function vertexClaudeExtension(pi: ExtensionAPI) {
-	const projectId = resolveProjectId();
-	const region = resolveRegion();
-	const discovered = await discoverModels(projectId, region);
-	const configured = modelsFromEnv();
-	const sourceModels = env("VERTEX_CLAUDE_MODELS") ? configured : [...discovered, ...FALLBACK_MODELS];
-	const modelList = addAliases(currentMajorModels(dedupe(sourceModels)));
-	const aliasTargets = new Map(modelList.filter((m) => m.aliasTarget).map((m) => [m.id, m.aliasTarget!]));
+function estimateContextTokens(context: Context): number {
+  const safeJson = (value: unknown) => {
+    try {
+      return JSON.stringify(value) ?? "undefined";
+    } catch {
+      return "[unserializable]";
+    }
+  };
+  const contentTokens = (content: unknown): number => {
+    if (typeof content === "string") return Math.ceil(content.length / 4);
+    if (!Array.isArray(content)) return 0;
+    return Math.ceil(
+      content.reduce(
+        (chars, block: any) => chars + (block.type === "text" ? block.text.length : 4800),
+        0,
+      ) / 4,
+    );
+  };
+  const messageTokens = (message: any): number => {
+    if (message.role === "user" || message.role === "toolResult")
+      return contentTokens(message.content);
+    return Math.ceil(
+      message.content.reduce(
+        (chars: number, block: any) =>
+          chars +
+          (block.type === "text"
+            ? block.text.length
+            : block.type === "thinking"
+              ? block.thinking.length
+              : block.name.length + safeJson(block.arguments).length),
+        0,
+      ) / 4,
+    );
+  };
+  let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
+  let usage:
+    | {
+        totalTokens?: number;
+        input: number;
+        output: number;
+        cacheRead: number;
+        cacheWrite: number;
+      }
+    | undefined;
+  let usageIndex = -1;
+  for (let index = 0; index < context.messages.length; index++) {
+    const message: any = context.messages[index];
+    const total =
+      message.usage &&
+      (message.usage.totalTokens ||
+        message.usage.input +
+          message.usage.output +
+          message.usage.cacheRead +
+          message.usage.cacheWrite);
+    if (
+      message.role === "assistant" &&
+      message.timestamp >= latestPrefixTimestamp &&
+      message.stopReason !== "aborted" &&
+      message.stopReason !== "error" &&
+      total > 0
+    ) {
+      usage = message.usage;
+      usageIndex = index;
+    }
+    latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
+  }
+  if (usage)
+    return (
+      (usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite) +
+      context.messages
+        .slice(usageIndex + 1)
+        .reduce((total, message) => total + messageTokens(message), 0)
+    );
+  return (
+    context.messages.reduce((total, message) => total + messageTokens(message), 0) +
+    (context.systemPrompt ? Math.ceil(context.systemPrompt.length / 4) : 0) +
+    (context.tools?.length ? Math.ceil(safeJson(context.tools).length / 4) : 0)
+  );
+}
 
-	let cachedClient: AnthropicVertex | undefined;
-	let cachedProjectId: string | undefined;
-	let cachedRegion: string | undefined;
-	let cachedBaseUrl: string | undefined;
-	function getVertexClient(projectId: string, region: string): AnthropicVertex {
-		const baseURL = vertexBaseUrl(region);
-		if (!cachedClient || cachedProjectId !== projectId || cachedRegion !== region || cachedBaseUrl !== baseURL) {
-			cachedClient = new AnthropicVertex({ projectId, region, baseURL });
-			cachedProjectId = projectId;
-			cachedRegion = region;
-			cachedBaseUrl = baseURL;
-		}
-		return cachedClient;
-	}
+export function clampMaxTokensToContext(
+  model: Model<"anthropic-messages">,
+  context: Context,
+  maxTokens: number,
+): number {
+  if (model.contextWindow <= 0) return Math.max(1, maxTokens);
+  return Math.min(
+    maxTokens,
+    Math.max(1, model.contextWindow - estimateContextTokens(context) - 4096),
+  );
+}
 
-	pi.registerProvider(PROVIDER, {
-		name: "Vertex Claude",
-		baseUrl: region ? vertexBaseUrl(region) : "https://aiplatform.googleapis.com/v1",
-		// Pi requires provider registrations with models to include an apiKey or oauth config.
-		// Vertex uses Google ADC through AnthropicVertex instead; streamSimple always overrides requests.
-		apiKey: AUTH_MARKER,
-		// Use Pi's Anthropic message conversion/event handling while AnthropicVertex rewrites requests to Vertex.
-		api: "anthropic-messages",
-		models: modelList.map(toPiModel),
-		streamSimple(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
-			const projectId = resolveProjectId();
-			const region = resolveRegion();
-			if (!projectId) {
-				throw new Error("Missing ANTHROPIC_VERTEX_PROJECT_ID, GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT for vertex-claude");
-			}
-			if (!region) {
-				throw new Error("Missing CLOUD_ML_REGION or GOOGLE_CLOUD_LOCATION for vertex-claude");
-			}
+export function vertexThinkingOptions(
+  model: Model<"anthropic-messages">,
+  context: Context,
+  options?: SimpleStreamOptions,
+): Pick<AnthropicOptions, "maxTokens" | "thinkingEnabled" | "thinkingBudgetTokens" | "effort"> {
+  const maxTokens = clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens);
+  if (!options?.reasoning) return { maxTokens, thinkingEnabled: false };
+  if (model.compat?.forceAdaptiveThinking === true)
+    return {
+      maxTokens,
+      thinkingEnabled: true,
+      effort: effortForReasoning(options.reasoning, model),
+    };
+  const budget = legacyThinkingBudget(options.reasoning, options);
+  const expandedMaxTokens = legacyMaxTokens(model, options, budget);
+  const clampedMaxTokens = clampMaxTokensToContext(model, context, expandedMaxTokens);
+  // The Anthropic builder treats a zero budget as 1024.  If there is not room
+  // for that minimum budget plus a 1024-token output reserve, omit thinking.
+  if (clampedMaxTokens <= 2048) return { maxTokens: clampedMaxTokens, thinkingEnabled: false };
+  return {
+    maxTokens: clampedMaxTokens,
+    thinkingEnabled: true,
+    thinkingBudgetTokens: Math.min(budget, clampedMaxTokens - 1024),
+  };
+}
 
-			const targetId = aliasTargets.get(model.id) ?? model.id;
-			const targetModel = { ...model, id: targetId, name: model.name ?? targetId } as Model<"anthropic-messages">;
-			const client = getVertexClient(projectId, region);
-			const reasoning = options?.reasoning;
-			const base = {
-				...options,
-				apiKey: AUTH_MARKER,
-				client: client as any,
-			};
+function errorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: unknown })?.status;
+  return typeof status === "number" ? status : undefined;
+}
 
-			if (!reasoning) {
-				return streamAnthropic(targetModel, context, { ...base, thinkingEnabled: false });
-			}
+export function classifyDiagnosticError(error: unknown): string {
+  const status = errorStatus(error);
+  const message = error instanceof Error ? error.message : String(error);
+  // Numeric HTTP statuses are authoritative even when a wrapped Error has a
+  // misleading message (for example, a 403 mentioning quota).
+  if (status === 401) return "missing ADC/auth configuration";
+  if (status === 403) return "permission failure";
+  if (status === 404)
+    return "ambiguous 404 (model, region, project, or model-access configuration)";
+  if (status === 429) return "quota or rate-limit failure";
+  if (/default credentials|could not load the default credentials|credential/i.test(message))
+    return "missing ADC/auth configuration";
+  if (/permission denied|does not have permission|forbidden/i.test(message))
+    return "permission failure";
+  if (/quota|rate limit|resource exhausted/i.test(message)) return "quota or rate-limit failure";
+  if (/enotfound|econnrefused|econnreset|network|fetch failed|timed out|timeout/i.test(message))
+    return "network failure";
+  return "request/authentication failure";
+}
 
-			const budget = thinkingBudget(reasoning);
-			return streamAnthropic(targetModel, context, {
-				...base,
-				maxTokens: maxTokensForThinking(targetModel, options, budget),
-				thinkingEnabled: true,
-				effort: effortForReasoning(reasoning, targetId),
-				thinkingBudgetTokens: budget,
-			});
-		},
-	});
+function briefError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, " ").slice(0, 240);
+}
+
+function reportDiagnostic(
+  ctx: {
+    hasUI: boolean;
+    ui: { notify(message: string, level: "info" | "warning" | "error"): void };
+  },
+  lines: string[],
+  level: "info" | "warning" | "error",
+) {
+  const message = lines.join("\n");
+  if (ctx.hasUI) ctx.ui.notify(message, level);
+  else console.log(`[vertex-claude] ${message}`);
+}
+
+async function validateAdc(): Promise<void> {
+  // This deliberately obtains ADC only when /vertex-claude-diagnose is run.
+  // Startup and --list-models remain entirely local and do not contact Vertex.
+  const auth = new GoogleAuth({
+    scopes: "https://www.googleapis.com/auth/cloud-platform",
+  });
+  const client = await auth.getClient();
+  await client.getRequestHeaders();
+}
+
+export default function vertexClaudeExtension(pi: ExtensionAPI) {
+  const configured = modelsFromEnv();
+  const manifestMode = process.env.VERTEX_CLAUDE_MODELS === undefined;
+  const concreteModels = dedupe(manifestMode ? DOCUMENTED_VERTEX_MODELS : configured);
+  const modelList = addAliases(concreteModels, manifestMode);
+  const aliasTargets = new Map(
+    modelList.flatMap((model) =>
+      model.aliasTarget ? [[model.id, model.aliasTarget] as const] : [],
+    ),
+  );
+
+  let cachedClient: AnthropicVertex | undefined;
+  let cachedProjectId: string | undefined;
+  let cachedRegion: string | undefined;
+  let cachedBaseUrl: string | undefined;
+  function getVertexClient(projectId: string, region: string): AnthropicVertex {
+    const baseURL = vertexBaseUrl(region);
+    if (
+      !cachedClient ||
+      cachedProjectId !== projectId ||
+      cachedRegion !== region ||
+      cachedBaseUrl !== baseURL
+    ) {
+      cachedClient = new AnthropicVertex({ projectId, region, baseURL });
+      cachedProjectId = projectId;
+      cachedRegion = region;
+      cachedBaseUrl = baseURL;
+    }
+    return cachedClient;
+  }
+
+  pi.registerProvider(PROVIDER, {
+    name: "Vertex Claude",
+    baseUrl: resolveRegion()
+      ? vertexBaseUrl(resolveRegion()!)
+      : "https://aiplatform.googleapis.com/v1",
+    // Pi requires a provider with models to declare auth. Vertex requests use
+    // ADC through AnthropicVertex; this marker is never sent as a credential.
+    apiKey: AUTH_MARKER,
+    api: "anthropic-messages",
+    models: modelList.map(toPiModel),
+    streamSimple(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
+      const projectId = resolveProjectId();
+      const region = resolveRegion();
+      if (!projectId)
+        throw new Error(
+          "Missing ANTHROPIC_VERTEX_PROJECT_ID, GOOGLE_CLOUD_PROJECT, " +
+            "or GCLOUD_PROJECT for vertex-claude",
+        );
+      if (!region)
+        throw new Error("Missing CLOUD_ML_REGION or GOOGLE_CLOUD_LOCATION for vertex-claude");
+
+      const targetId = aliasTargets.get(model.id) ?? model.id;
+      // Spread the registered model so inherited compat remains present after
+      // replacing an alias with its concrete Vertex request ID.
+      const targetModel = {
+        ...model,
+        id: targetId,
+        name: model.name ?? targetId,
+      } as Model<"anthropic-messages">;
+      const base: AnthropicOptions = {
+        ...options,
+        apiKey: AUTH_MARKER,
+        client: getVertexClient(projectId, region) as any,
+      };
+      return streamAnthropic(targetModel, context, {
+        ...base,
+        ...vertexThinkingOptions(targetModel, context, options),
+      });
+    },
+  });
+
+  pi.registerCommand("vertex-claude-diagnose", {
+    description:
+      "Validate Vertex Claude configuration, or probe one explicit model " +
+      "(may incur a small charge)",
+    handler: async (args, ctx) => {
+      const projectId = resolveProjectId();
+      const region = resolveRegion();
+      if (!projectId || !region) {
+        reportDiagnostic(
+          ctx,
+          [
+            "Vertex Claude diagnostic: missing configuration.",
+            ...(!projectId
+              ? ["Set ANTHROPIC_VERTEX_PROJECT_ID, GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT."]
+              : []),
+            ...(!region ? ["Set CLOUD_ML_REGION or GOOGLE_CLOUD_LOCATION."] : []),
+          ],
+          "error",
+        );
+        return;
+      }
+
+      const endpoint = vertexBaseUrl(region);
+      try {
+        await validateAdc();
+      } catch (error) {
+        reportDiagnostic(
+          ctx,
+          [`Vertex Claude diagnostic: ${classifyDiagnosticError(error)}.`, briefError(error)],
+          "error",
+        );
+        return;
+      }
+
+      const requested = normalizeModelId(args);
+      if (!requested) {
+        reportDiagnostic(
+          ctx,
+          [
+            "Vertex Claude diagnostic: configuration and ADC are ready.",
+            `Project: ${projectId}; region: ${region}; endpoint: ${endpoint}`,
+            "No model was probed. Run /vertex-claude-diagnose <model> " +
+              "for an explicit access probe.",
+          ],
+          "info",
+        );
+        return;
+      }
+
+      const targetId = aliasTargets.get(requested) ?? requested;
+      try {
+        await getVertexClient(projectId, region).messages.create({
+          model: targetId,
+          max_tokens: 1,
+          messages: [{ role: "user", content: "ok" }],
+        });
+        reportDiagnostic(
+          ctx,
+          [
+            `Vertex Claude diagnostic: ${targetId} access probe succeeded.`,
+            "A minimal inference was requested and may incur a small charge.",
+          ],
+          "info",
+        );
+      } catch (error) {
+        const status = errorStatus(error);
+        reportDiagnostic(
+          ctx,
+          [
+            `Vertex Claude diagnostic: ${targetId} probe failed: ` +
+              `${classifyDiagnosticError(error)}${status ? ` (HTTP ${status})` : ""}.`,
+            briefError(error),
+            status === 404
+              ? "A 404 is ambiguous and does not by itself prove an entitlement failure."
+              : "",
+          ].filter(Boolean),
+          "error",
+        );
+      }
+    },
+  });
 }

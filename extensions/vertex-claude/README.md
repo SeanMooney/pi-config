@@ -1,63 +1,92 @@
 # Vertex Claude Pi Extension
 
-`vertex-claude` is a Pi custom provider extension that lets Pi use Anthropic Claude models served through Google Vertex AI.
+`vertex-claude` is a Pi custom provider for Anthropic Claude models served by
+Google Vertex AI. It uses Google Application Default Credentials (ADC) through
+the official `@anthropic-ai/vertex-sdk` transport.
 
-It is intended for environments where Claude access is managed through Google Cloud / Vertex AI and Application Default Credentials (ADC), including setups that already work with Claude Code's Vertex mode.
+## Registration policy
 
-## What it registers
+The extension registers a maintained, local manifest at startup. It **does not
+list or probe Vertex models at startup**, so `--list-models` is local,
+deterministic, and does not require credentials.
 
-Provider name:
+The manifest follows the [Google Vertex AI Claude documentation][vertex-docs]
+and Anthropic model lifecycle documentation. Vertex-specific API IDs take
+precedence over native Anthropic retirement dates:
+
+[vertex-docs]:
+  https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude
+
+- active models and deprecated-but-not-retired models are registered;
+- retired models are excluded;
+- older IDs keep their required Vertex `@YYYYMMDD` revision suffixes;
+- lifecycle and alias eligibility are explicit manifest fields, not guessed from
+  version numbers.
+
+Current manifest entries include:
 
 ```text
-vertex-claude
-```
-
-Common model aliases:
-
-```text
-sonnet        -> latest discovered/fallback Sonnet
-claude-sonnet -> latest discovered/fallback Sonnet
-opus          -> latest discovered/fallback Opus
-claude-opus   -> latest discovered/fallback Opus
-haiku         -> latest discovered/fallback Haiku
-claude-haiku  -> latest discovered/fallback Haiku
-```
-
-It also registers concrete Vertex model IDs such as:
-
-```text
+claude-opus-4-8
 claude-opus-4-7
+claude-opus-4-6
+claude-opus-4-5@20251101
+claude-opus-4-1@20250805
+claude-opus-4@20250514
+claude-sonnet-5
 claude-sonnet-4-6
-claude-haiku-4-5
+claude-sonnet-4-5@20250929
+claude-sonnet-4@20250514
+claude-haiku-4-5@20251001
+claude-3-5-haiku@20241022
+claude-fable-5
 ```
 
-The fallback model list is based on Google's Vertex AI Claude model documentation. Discovery is attempted at startup when credentials/project/region are available, and falls back safely if discovery fails.
+Aliases are computed independently per family and point to the newest active,
+non-deprecated manifest entry:
 
-## Requirements
+```text
+opus, claude-opus       -> claude-opus-4-8
+sonnet, claude-sonnet   -> claude-sonnet-5
+haiku, claude-haiku     -> claude-haiku-4-5@20251001
+fable, claude-fable     -> claude-fable-5
+```
 
-- Pi 0.74.x-compatible extension runtime using the `@earendil-works/*` package
-  scope.
-- Node runtime compatible with Pi and this extension's dependencies.
-- Google Application Default Credentials that can access Vertex AI Anthropic publisher models.
-- A Google Cloud project with access to the desired Claude models.
+A major-5 Sonnet or Fable never suppresses registered major-4 Opus or Haiku
+models.
 
-Install extension dependencies:
+## Requirements and installation
+
+Pi loads this extension from the XDG-oriented config directory, for example:
 
 ```bash
 cd "$PI_CODING_AGENT_DIR/extensions/vertex-claude"
-npm install
+npm ci
 ```
 
-## Configuration
+The development dependencies are pinned to Pi 0.80.6. The extension imports
+legacy streaming helpers from Pi's supported `@earendil-works/pi-ai/compat`
+entrypoint, which Pi's loader resolves to the host runtime.
 
-Recommended environment variables:
+`@anthropic-ai/vertex-sdk` is intentionally pinned to exactly 0.16.1. Version
+0.16.1 retains the `prepareOptions`/`buildRequest` Vertex request adaptation.
+Starting with 0.17.1+, the SDK requires a `backendMiddleware` hook that is
+absent from the currently resolved Anthropic SDK transport, producing
+`/v1/v1/messages`.
+
+The narrowly scoped `gaxios@6.7.1` UUID override is a production-security
+exception, not a deprecation cleanup. `npm audit --omit=dev` identifies the
+legacy Google-auth path pulled by Vertex SDK 0.16.1 as affected by
+GHSA-w5hq-g745-h8pq (`uuid <11.1.1`). It applies only below that exact gaxios
+version. Remove it when the pinned Vertex SDK can move to a transport-compatible
+dependency path that no longer brings gaxios 6.7.1.
+
+Configure a project, region, and ADC:
 
 ```bash
-export CLOUD_ML_REGION=global
 export ANTHROPIC_VERTEX_PROJECT_ID=your-gcp-project-id
-export GOOGLE_CLOUD_PROJECT="$ANTHROPIC_VERTEX_PROJECT_ID"
-export GOOGLE_CLOUD_LOCATION="$CLOUD_ML_REGION"
-export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
+export CLOUD_ML_REGION=global
+export GOOGLE_APPLICATION_CREDENTIALS=\
+"$HOME/.config/gcloud/application_default_credentials.json"
 ```
 
 Project ID resolution order:
@@ -66,156 +95,126 @@ Project ID resolution order:
 2. `GOOGLE_CLOUD_PROJECT`
 3. `GCLOUD_PROJECT`
 
-Region/location resolution order:
+Region resolution order:
 
 1. `CLOUD_ML_REGION`
 2. `GOOGLE_CLOUD_LOCATION`
 
-Optional settings:
+`ANTHROPIC_VERTEX_BASE_URL` optionally overrides the constructed Vertex
+endpoint. Only set it to a trusted endpoint.
+
+## Explicit model override
+
+`VERTEX_CLAUDE_MODELS` remains authoritative. When set, the manifest is not
+added and aliases are derived only from the supplied comma-separated list:
 
 ```bash
-# Explicit model list. When set, this is authoritative and fallback/discovery models are not added.
-export VERTEX_CLAUDE_MODELS="claude-sonnet-4-6,claude-opus-4-7,claude-haiku-4-5"
-
-# Disable publisher-model discovery at Pi startup.
-export VERTEX_CLAUDE_DISABLE_DISCOVERY=1
-
-# Print discovery failures to stderr for debugging.
-export VERTEX_CLAUDE_DEBUG=1
-
-# Override the Vertex API base URL. Use with care; Google auth headers are sent to this URL during discovery.
-export ANTHROPIC_VERTEX_BASE_URL="https://aiplatform.googleapis.com/v1"
+export VERTEX_CLAUDE_MODELS=\
+"claude-opus-4-8,claude-sonnet-5,claude-haiku-4-5@20251001,claude-fable-5"
 ```
+
+Known manifest IDs retain their documented metadata. A syntactically valid,
+env-only recognized Claude family/version ID that Pi does not know is still
+registered rather than silently discarded. It uses conservative Vertex defaults
+(reasoning and text/image input, 200K context, 64K output, zero cost) until Pi
+gains catalog metadata.
+
+IDs must use a recognized family/version form such as `claude-opus-4-8` or
+`claude-3-5-haiku@20241022`; malformed IDs are rejected. An empty or malformed
+override throws a clear extension configuration error and never falls back to
+the manifest. Pi's extension loader may swallow that load error. In that case,
+`--list-models` simply shows no Vertex Claude models rather than displaying the
+exact error.
+
+## Metadata and thinking
+
+For every registered model, the extension removes only a Vertex `@revision`
+suffix for lookup in Pi's built-in Anthropic catalog, while retaining the exact
+Vertex ID in requests. When a catalog match exists it inherits all relevant
+metadata:
+
+- `compat` (including adaptive thinking and `supportsTemperature: false`);
+- `reasoning` and `thinkingLevelMap`;
+- `input`, `cost`, `contextWindow`, and `maxTokens`.
+
+Consequently Pi 0.80.6 metadata improvements, including 1M context, 128K output,
+and adaptive effort maps, flow to matching Vertex models automatically.
+
+The custom `streamSimple` retains the `AnthropicVertex` client injection.
+Adaptive models use adaptive thinking with effort and no legacy token budget;
+older models use budget-based thinking without adaptive effort. All branches
+estimate context, reserve Pi's 4,096-token safety margin, clamp to at least one
+token, and clamp legacy thinking again after budget expansion.
+
+If that leaves insufficient room for both Anthropic's 1,024-token minimum
+legacy-thinking budget and a 1,024-token output reserve, legacy thinking is
+disabled for that request rather than sending a zero budget, which the Anthropic
+builder converts back to 1,024. This preserves context clamping while retaining
+inherited compatibility metadata on alias request targets.
 
 ## Usage
 
-List registered models:
+List models without startup discovery or network access:
 
 ```bash
-pi --no-extensions \
-  -e "$PI_CODING_AGENT_DIR/extensions/vertex-claude/index.ts" \
+PI_CODING_AGENT_DIR="$PI_CODING_AGENT_DIR" \
+pi --no-extensions -e "$PI_CODING_AGENT_DIR/extensions/vertex-claude/index.ts" \
   --list-models vertex-claude
 ```
 
-Smoke test:
-
-```bash
-pi --no-extensions \
-  -e "$PI_CODING_AGENT_DIR/extensions/vertex-claude/index.ts" \
-  --provider vertex-claude \
-  --model sonnet \
-  --no-tools \
-  -p "Reply with exactly: ok"
-```
-
-Use in normal Pi sessions by selecting a model such as:
+Use a concrete model or family alias:
 
 ```text
 vertex-claude/sonnet
 vertex-claude/opus
 vertex-claude/haiku
-vertex-claude/claude-sonnet-4-6
+vertex-claude/fable
+vertex-claude/claude-opus-4-8
 ```
 
-If the extension is in Pi's auto-discovered extension directory, it loads automatically. In this XDG-based config repo that directory is expected to be:
+## Diagnostics
+
+Use the interactive Pi command:
 
 ```text
-$PI_CODING_AGENT_DIR/extensions/vertex-claude/
+/vertex-claude-diagnose
+/vertex-claude-diagnose claude-opus-4-8
 ```
+
+Without a model, the command validates project/region configuration, constructs
+the endpoint, and acquires ADC credentials. It does not send a model request.
+With a model, it makes an explicitly requested one-token inference/access probe,
+which can incur a small charge.
+
+Diagnostics classify missing configuration/auth, permission failures, quota/rate
+limits, network failures, and ambiguous 404s. A 404 can indicate a model,
+region, project, or model-access configuration problem; it is never presented as
+unique proof of entitlement failure. UI notifications are guarded by `hasUI`, so
+non-interactive modes remain safe.
 
 ## Validation
 
-Run the validation script from this repository:
+Run:
 
 ```bash
 extensions/vertex-claude/validate.sh
 ```
 
-It checks:
+The default checks use an isolated temporary-copy lockfile installation, strict
+TypeScript, manifest model listing, independent aliases, authoritative override
+behavior, inherited metadata wiring, a fake-auth/fake-fetch Vertex transport
+request, and the absence of startup discovery.
 
-- TypeScript syntax/types with `--strict`.
-- Production dependency audit.
-- Fallback model registration.
-- Normal discovery-path model registration.
-- `VERTEX_CLAUDE_MODELS` override behavior.
-- Live no-thinking and low-thinking smoke tests.
+`npm ci` and `npm audit` contact the npm registry. Extension startup and model
+listing make no Vertex requests, require no Vertex credentials, and make no
+inference calls.
 
-Optional tool smoke test:
+To run an opt-in credentialed inference smoke test:
 
 ```bash
-RUN_VERTEX_CLAUDE_TOOL_TEST=1 extensions/vertex-claude/validate.sh
+RUN_VERTEX_CLAUDE_SMOKE_MODEL=claude-sonnet-5 \
+  extensions/vertex-claude/validate.sh
 ```
 
-## How it works
-
-Pi requires providers with models to include a `baseUrl` and either `apiKey` or `oauth`. Vertex uses Google ADC instead of an Anthropic API key, so the extension registers a harmless marker API key:
-
-```text
-gcp-vertex-credentials
-```
-
-Actual requests are handled by a custom `streamSimple` implementation. It creates an official Anthropic Vertex SDK client:
-
-```ts
-new AnthropicVertex({ projectId, region, baseURL })
-```
-
-and delegates message conversion, tool conversion, streaming event handling, usage accounting, and thinking support to Pi's existing Anthropic implementation:
-
-```ts
-streamAnthropic(..., { client: anthropicVertexClient })
-```
-
-The Anthropic Vertex SDK rewrites Anthropic Messages API calls to Vertex `rawPredict` / `streamRawPredict` publisher-model endpoints and handles Google authentication.
-
-## Discovery and fallback behavior
-
-At startup, the extension attempts to list Anthropic publisher models from Vertex:
-
-```text
-GET {baseUrl}/projects/{project}/locations/{region}/publishers/anthropic/models
-```
-
-Discovery is best-effort:
-
-- It has a bounded timeout.
-- Failure never prevents Pi from starting.
-- If discovery fails, the documented fallback model list is used.
-- If `VERTEX_CLAUDE_MODELS` is set, that explicit list is used instead of discovery/fallback.
-
-## Thinking support
-
-The extension advertises reasoning support for current Claude 4 models. It
-inherits `thinkingLevelMap` metadata from Pi's built-in Anthropic catalog so
-Pi's thinking-level UI follows the same model capabilities as the native
-Anthropic provider. Vertex model IDs with revision suffixes such as `@001` are
-matched against the base Anthropic model ID for this lookup.
-
-When Pi enables thinking, the extension passes both adaptive-effort and
-token-budget hints to Pi's Anthropic provider. Pi's Anthropic implementation
-decides which form applies to the concrete model ID.
-
-Reasoning level mapping:
-
-| Pi level | Budget tokens | Effort |
-| --- | ---: | --- |
-| `minimal` | 1,024 | `low` |
-| `low` | 4,096 | `low` |
-| `medium` | 8,192 | `medium` |
-| `high` | 16,384 | `high` |
-| `xhigh` | 32,768 | Anthropic catalog value when present (`max` for Opus 4.6, `xhigh` for Opus 4.7), otherwise `high` |
-
-## Security notes
-
-- No Google credentials or tokens are stored by this extension.
-- No credentials are logged.
-- Google authentication is delegated to `google-auth-library` and `@anthropic-ai/vertex-sdk`.
-- `projectId` and `region` are URL-encoded for discovery requests.
-- `ANTHROPIC_VERTEX_BASE_URL` is powerful: if set, Google auth headers may be sent to that URL during discovery. Only set it to trusted endpoints.
-
-## Known limitations
-
-- Costs are currently registered as zero, so Pi usage-cost display is not accurate for this provider.
-- Model availability depends on project, region, allowlisting, and Vertex model access.
-- Fallback IDs may appear even if your project cannot access them. Use `VERTEX_CLAUDE_MODELS` for a known-good local list.
-- This is currently a local Pi extension, not a packaged Pi extension. If moved to its own repo/package later, include the same runtime dependencies and keep `node_modules/` out of version control.
+That smoke test can incur normal Vertex usage charges and requires the selected
+model to be available to the configured project and region.
