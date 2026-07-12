@@ -72,11 +72,7 @@ import { isIP, BlockList } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
-import {
-  SandboxManager,
-  type SandboxAskCallback,
-  type SandboxRuntimeConfig,
-} from "@carderne/sandbox-runtime";
+import { SandboxManager, type SandboxRuntimeConfig } from "@carderne/sandbox-runtime";
 import {
   type BashOperations,
   createBashToolDefinition,
@@ -253,6 +249,10 @@ function deepMerge(base: SandboxConfig, overrides: Partial<SandboxConfig>): Sand
 
 // ── Domain helpers ────────────────────────────────────────────────────────────
 
+export function appendUnique(existing: string[], additions: string[]): string[] {
+  return [...new Set([...existing, ...additions])];
+}
+
 export function shouldPromptForWrite(
   path: string,
   allowWrite: string[],
@@ -316,10 +316,6 @@ function allowsAllDomains(allowedDomains: string[] | undefined): boolean {
 
 function domainIsAllowed(domain: string, allowedDomains: string[]): boolean {
   return allowedDomains.some((p) => domainMatchesPattern(domain, p));
-}
-
-function createNetworkAskCallback(allowedDomains: string[]): SandboxAskCallback {
-  return async ({ host }) => domainIsAllowed(host, allowedDomains);
 }
 
 // ── Output analysis ───────────────────────────────────────────────────────────
@@ -469,14 +465,22 @@ function addWritePathToConfig(configPath: string, pathToAdd: string): void {
 
 // ── Sandboxed bash ops ────────────────────────────────────────────────────────
 
-function createSandboxedBashOps(shellPath?: string): BashOperations {
+function createSandboxedBashOps(
+  shellPath?: string,
+  getRuntimeConfig?: (cwd: string) => Partial<SandboxRuntimeConfig>,
+): BashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (!existsSync(cwd)) {
         throw new Error(`Working directory does not exist: ${cwd}`);
       }
 
-      const wrappedCommand = await SandboxManager.wrapWithSandbox(command);
+      const wrappedCommand = await SandboxManager.wrapWithSandbox(
+        command,
+        undefined,
+        getRuntimeConfig?.(cwd),
+        signal,
+      );
       const { shell, args } = getShellConfig(shellPath);
 
       return new Promise((resolve, reject) => {
@@ -583,52 +587,36 @@ export default function (pi: ExtensionAPI) {
 
   function getEffectiveAllowedDomains(cwd: string): string[] {
     const config = loadConfig(cwd);
-    return [...(config.network?.allowedDomains ?? []), ...sessionAllowedDomains];
+    return appendUnique(config.network?.allowedDomains ?? [], sessionAllowedDomains);
   }
 
   function getEffectiveAllowRead(cwd: string): string[] {
     const config = loadConfig(cwd);
-    return [...(config.filesystem?.allowRead ?? []), ...sessionAllowedReadPaths];
+    return appendUnique(config.filesystem?.allowRead ?? [], sessionAllowedReadPaths);
   }
 
   function getEffectiveAllowWrite(cwd: string): string[] {
     const config = loadConfig(cwd);
-    return [...(config.filesystem?.allowWrite ?? []), ...sessionAllowedWritePaths];
+    return appendUnique(config.filesystem?.allowWrite ?? [], sessionAllowedWritePaths);
   }
 
-  // ── Sandbox reinitialize ────────────────────────────────────────────────────
-  // Called after granting a session/permanent allowance so the OS-level sandbox
-  // picks up the new rules before the next bash subprocess starts.
-
-  async function reinitializeSandbox(cwd: string): Promise<void> {
-    if (!sandboxInitialized) return;
+  function getEffectiveRuntimeConfig(cwd: string): Partial<SandboxRuntimeConfig> {
     const config = loadConfig(cwd);
-    const configExt = config as unknown as { allowBrowserProcess?: boolean };
-    try {
-      const network = {
+    return {
+      ...config,
+      network: {
         ...config.network,
-        allowedDomains: [...(config.network?.allowedDomains ?? []), ...sessionAllowedDomains],
+        allowedDomains: getEffectiveAllowedDomains(cwd),
         deniedDomains: config.network?.deniedDomains ?? [],
-      };
-      await SandboxManager.reset();
-      await SandboxManager.initialize(
-        {
-          network,
-          filesystem: {
-            ...config.filesystem,
-            denyRead: config.filesystem?.denyRead ?? [],
-            allowRead: [...(config.filesystem?.allowRead ?? []), ...sessionAllowedReadPaths],
-            allowWrite: [...(config.filesystem?.allowWrite ?? []), ...sessionAllowedWritePaths],
-            denyWrite: config.filesystem?.denyWrite ?? [],
-          },
-          allowBrowserProcess: configExt.allowBrowserProcess,
-          enableWeakerNetworkIsolation: true,
-        },
-        createNetworkAskCallback(network.allowedDomains),
-      );
-    } catch (e) {
-      console.error(`Warning: Failed to reinitialize sandbox: ${e}`);
-    }
+      },
+      filesystem: {
+        ...config.filesystem,
+        denyRead: config.filesystem?.denyRead ?? [],
+        allowRead: getEffectiveAllowRead(cwd),
+        allowWrite: getEffectiveAllowWrite(cwd),
+        denyWrite: config.filesystem?.denyWrite ?? [],
+      },
+    };
   }
 
   // ── UI prompts ──────────────────────────────────────────────────────────────
@@ -824,7 +812,6 @@ export default function (pi: ExtensionAPI) {
     if (!sessionAllowedDomains.includes(domain)) sessionAllowedDomains.push(domain);
     if (choice === "project") addDomainToConfig(projectPath, domain);
     if (choice === "global") addDomainToConfig(globalPath, domain);
-    await reinitializeSandbox(cwd);
   }
 
   async function applyReadChoice(
@@ -836,7 +823,6 @@ export default function (pi: ExtensionAPI) {
     if (!sessionAllowedReadPaths.includes(filePath)) sessionAllowedReadPaths.push(filePath);
     if (choice === "project") addReadPathToConfig(projectPath, filePath);
     if (choice === "global") addReadPathToConfig(globalPath, filePath);
-    await reinitializeSandbox(cwd);
   }
 
   async function applyWriteChoice(
@@ -848,7 +834,6 @@ export default function (pi: ExtensionAPI) {
     if (!sessionAllowedWritePaths.includes(filePath)) sessionAllowedWritePaths.push(filePath);
     if (choice === "project") addWritePathToConfig(projectPath, filePath);
     if (choice === "global") addWritePathToConfig(globalPath, filePath);
-    await reinitializeSandbox(cwd);
   }
 
   // ── Bash tool — with write-block detection and retry ───────────────────────
@@ -876,7 +861,7 @@ export default function (pi: ExtensionAPI) {
           return localBash.execute(id, params, signal, onUpdate, ctx);
         }
         const sandboxedBash = createBashToolDefinition(localCwd, {
-          operations: createSandboxedBashOps(userShellPath),
+          operations: createSandboxedBashOps(userShellPath, getEffectiveRuntimeConfig),
           shellPath: userShellPath,
         });
         return sandboxedBash.execute(id, params, signal, onUpdate, ctx);
@@ -991,7 +976,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
-    return { operations: createSandboxedBashOps(userShellPath) };
+    return { operations: createSandboxedBashOps(userShellPath, getEffectiveRuntimeConfig) };
   });
 
   // ── tool_call — network pre-check for bash, path policy for read/write/edit
@@ -1142,7 +1127,7 @@ export default function (pi: ExtensionAPI) {
           allowBrowserProcess: configExt.allowBrowserProcess,
           enableWeakerNetworkIsolation: true,
         },
-        createNetworkAskCallback(config.network?.allowedDomains ?? []),
+        async ({ host }) => domainIsAllowed(host, getEffectiveAllowedDomains(ctx.cwd)),
       );
 
       // Make Node's built-in fetch() honour HTTP_PROXY / HTTPS_PROXY in this
@@ -1228,7 +1213,7 @@ export default function (pi: ExtensionAPI) {
             allowBrowserProcess: configExt.allowBrowserProcess,
             enableWeakerNetworkIsolation: true,
           },
-          createNetworkAskCallback(config.network?.allowedDomains ?? []),
+          async ({ host }) => domainIsAllowed(host, getEffectiveAllowedDomains(ctx.cwd)),
         );
 
         sandboxEnabled = true;
