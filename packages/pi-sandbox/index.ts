@@ -395,6 +395,40 @@ function matchesPattern(filePath: string, patterns: string[]): boolean {
   });
 }
 
+interface LoadedSkillPath {
+  filePath?: string;
+  baseDir?: string;
+}
+
+function containsGlobCharacters(filePath: string): boolean {
+  return ["*", "?", "[", "]"].some((character) => filePath.includes(character));
+}
+
+export function collectSkillReadPaths(skills: readonly LoadedSkillPath[] | undefined): string[] {
+  const paths = (skills ?? []).flatMap((skill) => {
+    const skillDir = skill.baseDir ?? (skill.filePath ? dirname(skill.filePath) : undefined);
+    if (!skillDir) return [];
+
+    const canonicalDir = canonicalizePath(skillDir);
+    // Generated allowances must remain literal. The sandbox runtime treats
+    // glob characters as patterns and offers no literal escaping mechanism.
+    return containsGlobCharacters(canonicalDir) ? [] : [canonicalDir];
+  });
+  return appendUnique([], paths);
+}
+
+export function mergeReadAllowances(
+  configured: string[],
+  session: string[],
+  loadedSkills: string[],
+): string[] {
+  return appendUnique(configured, [...session, ...loadedSkills]);
+}
+
+export function isReadPathAllowed(filePath: string, allowRead: string[]): boolean {
+  return matchesPattern(filePath, allowRead);
+}
+
 // ── Config file updaters (Node.js process — not OS-sandboxed) ─────────────────
 
 function getConfigPaths(cwd: string): {
@@ -582,6 +616,7 @@ export default function (pi: ExtensionAPI) {
   const sessionAllowedDomains: string[] = [];
   const sessionAllowedReadPaths: string[] = [];
   const sessionAllowedWritePaths: string[] = [];
+  let loadedSkillReadPaths: string[] = [];
 
   // ── Effective config helpers ────────────────────────────────────────────────
 
@@ -592,7 +627,11 @@ export default function (pi: ExtensionAPI) {
 
   function getEffectiveAllowRead(cwd: string): string[] {
     const config = loadConfig(cwd);
-    return appendUnique(config.filesystem?.allowRead ?? [], sessionAllowedReadPaths);
+    return mergeReadAllowances(
+      config.filesystem?.allowRead ?? [],
+      sessionAllowedReadPaths,
+      loadedSkillReadPaths,
+    );
   }
 
   function getEffectiveAllowWrite(cwd: string): string[] {
@@ -1021,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
       const filePath = canonicalizePath(event.input.path);
       const effectiveAllowRead = getEffectiveAllowRead(ctx.cwd);
 
-      if (!matchesPattern(filePath, effectiveAllowRead)) {
+      if (!isReadPathAllowed(filePath, effectiveAllowRead)) {
         const choice = await promptReadBlock(ctx, filePath);
         if (choice === "abort") {
           return {
@@ -1077,6 +1116,10 @@ export default function (pi: ExtensionAPI) {
         };
       }
     }
+  });
+
+  pi.on("before_agent_start", (event) => {
+    loadedSkillReadPaths = collectSkillReadPaths(event.systemPromptOptions.skills);
   });
 
   // ── session_start ───────────────────────────────────────────────────────────
