@@ -93,7 +93,7 @@ test("confirmation truncates long tasks", async () => {
   assert.ok(prompt.length < 2_100);
 });
 
-test("declined calls are non-errors and release the delegation gate", async () => {
+test("declined calls are non-errors and release admission", async () => {
   const tool = extensionHarness().registeredTool;
   assert.ok(tool);
   let confirmations = 0;
@@ -143,11 +143,76 @@ test("overlapping Cursor calls are rejected", async () => {
   ] as const;
 
   const first = tool.execute(...args);
-  const second = await tool.execute(...args);
-  assert.equal(second.details.busy, true);
-  assert.equal(second.isError, true);
+  await assert.rejects(tool.execute(...args), /already running/);
   releaseConfirmation?.(false);
   await first;
+});
+
+test("pre-aborted Pi tool calls do not start a workflow", async () => {
+  const tool = extensionHarness().registeredTool;
+  assert.ok(tool);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    tool.execute(
+      "call-id",
+      { intent: "review", task: "Review the commit" },
+      controller.signal,
+      undefined,
+      { hasUI: false, ui: {}, cwd: process.cwd() } as never,
+    ),
+    /cancelled/,
+  );
+});
+
+test("typed workflow failures throw through the Pi tool boundary", async () => {
+  const tool = extensionHarness().registeredTool;
+  assert.ok(tool);
+  await assert.rejects(
+    tool.execute(
+      "call-id",
+      {
+        intent: "review",
+        task: "Review the commit",
+        model: "unsupported-custom-model",
+        effort: "high",
+      },
+      new AbortController().signal,
+      undefined,
+      { hasUI: false, ui: {}, cwd: process.cwd() } as never,
+    ),
+    /Effort and speed overrides/,
+  );
+});
+
+test("session shutdown interrupts an active supervised workflow", async () => {
+  const harness = extensionHarness();
+  const tool = harness.registeredTool;
+  assert.ok(tool);
+  let markConfirming: (() => void) | undefined;
+  const confirming = new Promise<void>((resolve) => {
+    markConfirming = resolve;
+  });
+  const active = tool.execute(
+    "call-id",
+    { intent: "review", task: "Review the commit" },
+    new AbortController().signal,
+    undefined,
+    {
+      hasUI: true,
+      cwd: process.cwd(),
+      ui: {
+        confirm() {
+          markConfirming?.();
+          return new Promise<boolean>(() => undefined);
+        },
+      },
+    } as never,
+  );
+
+  await confirming;
+  await harness.handler("session_shutdown")();
+  await assert.rejects(active, /cancelled/);
 });
 
 test("headless delegation trusts the skill decision", async () => {

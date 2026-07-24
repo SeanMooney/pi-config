@@ -2,20 +2,15 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
+import { Cause, Exit } from "effect";
 import { Type } from "typebox";
 
-import { DelegationGate, isExcludedRuntime } from "./runtime.js";
-import { runCursorDelegation } from "./acp-client.js";
-import { captureGitSnapshot, formatGitComparison, type GitSnapshot } from "./git-state.js";
-import { combineAbortSignals, DelegationLifecycle } from "./lifecycle.js";
-import { assertCursorVersion, listCursorModelIds } from "./model-catalog.js";
-import {
-  resolveModelProfile,
-  type CursorEffort,
-  type CursorIntent,
-  type CursorSpeed,
-} from "./model-profiles.js";
+import { type CursorDelegationResult } from "./acp-client.js";
+import { delegateToCursor } from "./delegation.js";
+import type { CursorIntent } from "./model-profiles.js";
+import { CursorRuntimeOwner, isExcludedRuntime } from "./runtime.js";
 
 const TOOL_NAME = "cursor_agent";
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -24,7 +19,7 @@ const SKILL_DIR = join(PACKAGE_ROOT, "resources");
 const SCRATCH_ROOT = join(process.env.PI_CODING_AGENT_DIR ?? PACKAGE_ROOT, ".tmp", "pi-cursor-acp");
 
 const CursorParameters = Type.Object({
-  intent: Type.Union([Type.Literal("context"), Type.Literal("implement"), Type.Literal("review")]),
+  intent: StringEnum(["context", "implement", "review"] as const),
   task: Type.String({
     minLength: 1,
     description: "Self-contained task for the delegated Cursor Agent.",
@@ -34,10 +29,8 @@ const CursorParameters = Type.Object({
       description: "Exact Cursor CLI model ID explicitly requested by the user.",
     }),
   ),
-  effort: Type.Optional(
-    Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
-  ),
-  speed: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("fast")])),
+  effort: Type.Optional(StringEnum(["low", "medium", "high"] as const)),
+  speed: Type.Optional(StringEnum(["standard", "fast"] as const)),
 });
 
 export function notifyIfUI(ctx: Pick<ExtensionContext, "hasUI" | "ui">, message: string): void {
@@ -132,17 +125,21 @@ function cursorRequestHandler(ctx: ExtensionContext) {
   };
 }
 
-function formatResult(
-  result: Awaited<ReturnType<typeof runCursorDelegation>>,
-  gitComparison?: string,
-): string {
+function formatResult(result: CursorDelegationResult, gitComparison?: string): string {
   const sections = [
     `Cursor Agent completed ${result.intent} with ${result.modelId} in ${result.mode} mode.`,
     `Stop reason: ${result.stopReason}`,
     "",
     result.output.trim() || "Cursor Agent returned no text output.",
   ];
-  if (result.truncated) sections.push("", "[Cursor output truncated at 100,000 characters]");
+  if (result.truncated) {
+    sections.push(
+      "",
+      result.fullOutputPath
+        ? `[Cursor output truncated. Full output: ${result.fullOutputPath}]`
+        : "[Cursor output truncated]",
+    );
+  }
   if (gitComparison) sections.push("", gitComparison);
   return sections.join("\n");
 }
@@ -153,9 +150,7 @@ export default function cursorAcpExtension(
 ) {
   if (isExcludedRuntime(runtime.env ?? process.env, runtime.argv ?? process.argv)) return;
 
-  const lifecycle = new DelegationLifecycle();
-  const delegationGate = new DelegationGate();
-  let activeDelegation: ReturnType<typeof runCursorDelegation> | undefined;
+  const runtimeOwner = new CursorRuntimeOwner();
 
   pi.registerTool({
     name: TOOL_NAME,
@@ -165,67 +160,26 @@ export default function cursorAcpExtension(
       "Call only when the user explicitly asks to involve Cursor; interactive sessions require confirmation.",
     parameters: CursorParameters,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      if (!delegationGate.tryStart()) {
-        return {
-          content: [{ type: "text", text: "A Cursor Agent delegation is already running." }],
-          details: { busy: true },
-          isError: true,
-        };
-      }
-      let before: GitSnapshot | undefined;
-      try {
-        const profile = resolveModelProfile(params.intent as CursorIntent, {
-          model: params.model,
-          effort: params.effort as CursorEffort | undefined,
-          speed: params.speed as CursorSpeed | undefined,
-        });
-        const confirmed = await confirmDelegation(
-          ctx,
-          profile.intent,
-          profile.cliModelId,
-          params.task,
-        );
-        if (!confirmed) {
-          return {
-            content: [{ type: "text", text: "Cursor Agent delegation cancelled by the user." }],
-            details: { cancelled: true },
-          };
-        }
-
-        await assertCursorVersion();
-        const availableModels = await listCursorModelIds(SCRATCH_ROOT);
-        if (!availableModels.has(profile.cliModelId)) {
-          throw new Error(
-            `Cursor model ${profile.cliModelId} is not available for the authenticated account.`,
-          );
-        }
-
-        if (profile.intent === "implement") {
-          before = await captureGitSnapshot(ctx.cwd);
-        }
-
-        notifyIfUI(
-          ctx,
-          `Cursor Agent: ${profile.intent} with ${profile.cliModelId} (${profile.mode})`,
-        );
-        onUpdate?.({
-          content: [
-            {
-              type: "text",
-              text: `Starting Cursor Agent with ${profile.cliModelId}...`,
-            },
-          ],
-          details: { intent: profile.intent, model: profile.cliModelId },
-        });
-
-        let progress = "";
-        activeDelegation = runCursorDelegation({
+      if (signal?.aborted) throw new Error("Cursor Agent delegation cancelled.");
+      let progress = "";
+      const exit = await runtimeOwner.runPromiseExit(
+        delegateToCursor({
           cwd: ctx.cwd,
-          profile,
+          intent: params.intent,
           task: params.task,
+          model: params.model,
+          effort: params.effort,
+          speed: params.speed,
           policyPluginDir: POLICY_PLUGIN_DIR,
           scratchRoot: SCRATCH_ROOT,
-          signal: combineAbortSignals(signal, lifecycle.signal),
+          confirm: (intent, model, task) => confirmDelegation(ctx, intent, model, task),
+          onAccepted(intent, model, mode) {
+            notifyIfUI(ctx, `Cursor Agent: ${intent} with ${model} (${mode})`);
+            onUpdate?.({
+              content: [{ type: "text", text: `Starting Cursor Agent with ${model}...` }],
+              details: { intent, model },
+            });
+          },
           onPermission: permissionHandler(ctx),
           onCursorRequest: cursorRequestHandler(ctx),
           onUpdate(text) {
@@ -233,51 +187,46 @@ export default function cursorAcpExtension(
             if (text.includes("\n") || text.startsWith("[Cursor")) {
               onUpdate?.({
                 content: [{ type: "text", text: progress }],
-                details: { intent: profile.intent, model: profile.cliModelId },
+                details: { intent: params.intent, model: params.model },
               });
             }
           },
-        });
-        const result = await activeDelegation;
+        }),
+        signal,
+      );
 
-        let comparison: string | undefined;
-        if (before) {
-          const after = await captureGitSnapshot(ctx.cwd);
-          comparison = formatGitComparison(before, after);
+      if (Exit.isFailure(exit)) {
+        if (Cause.hasInterruptsOnly(exit.cause)) {
+          throw new Error("Cursor Agent delegation cancelled.");
         }
-        return {
-          content: [{ type: "text", text: formatResult(result, comparison) }],
-          details: {
-            intent: result.intent,
-            model: result.modelId,
-            acpModel: result.acpModelId,
-            mode: result.mode,
-            stopReason: result.stopReason,
-            truncated: result.truncated,
-          },
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          content: [{ type: "text", text: `Cursor Agent failed: ${message}` }],
-          details: { error: message },
-          isError: true,
-        };
-      } finally {
-        activeDelegation = undefined;
-        delegationGate.finish();
+        const cause = Cause.squash(exit.cause);
+        throw cause instanceof Error ? cause : new Error(String(cause));
       }
-    },
-  });
 
-  pi.on("session_start", () => {
-    lifecycle.reset();
+      if (exit.value._tag === "Declined") {
+        return {
+          content: [{ type: "text", text: "Cursor Agent delegation cancelled by the user." }],
+          details: { cancelled: true },
+        };
+      }
+
+      const { result, gitComparison } = exit.value;
+      return {
+        content: [{ type: "text", text: formatResult(result, gitComparison) }],
+        details: {
+          intent: result.intent,
+          model: result.modelId,
+          acpModel: result.acpModelId,
+          mode: result.mode,
+          stopReason: result.stopReason,
+          truncated: result.truncated,
+          fullOutputPath: result.fullOutputPath,
+        },
+      };
+    },
   });
 
   pi.on("resources_discover", () => ({ skillPaths: [SKILL_DIR] }));
 
-  pi.on("session_shutdown", async () => {
-    lifecycle.shutdown();
-    await activeDelegation?.catch(() => undefined);
-  });
+  pi.on("session_shutdown", () => runtimeOwner.shutdown());
 }

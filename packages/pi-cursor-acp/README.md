@@ -99,6 +99,25 @@ command inspection, not complete shell containment. Implementation mode edits
 the current worktree and leaves changes uncommitted. Pi receives before/after
 aggregate Git state and must inspect and validate the result independently.
 
+## Runtime and lifecycle
+
+The Pi callbacks are thin host adapters around an Effect 4 application core. One
+lazy managed runtime is created per eligible extension instance. A one-permit
+semaphore rejects overlapping delegations, while a scoped fiber set supervises
+the complete confirmation, preflight, Git inspection, and ACP workflow.
+
+Tool cancellation interrupts its supervised workflow. Session shutdown first
+prevents new work, interrupts and awaits active workflows and their finalizers,
+and then disposes the managed runtime. Each ACP invocation owns a scoped Cursor
+process and temporary configuration directory with bounded TERM-to-KILL cleanup.
+Expected workflow failures remain typed until the Pi tool boundary, where they
+are thrown so Pi records a failed tool execution.
+
+Model-facing Cursor output is limited to Pi's 50 KB and 2,000-line limits. When
+truncated, the complete output is retained in a private file under
+`$PI_CODING_AGENT_DIR/.tmp/pi-cursor-acp` and its path is included in the tool
+result.
+
 ## Validation
 
 ```bash

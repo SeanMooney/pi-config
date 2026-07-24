@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@earendil-works/pi-coding-agent";
+import { Effect } from "effect";
 
 import { buildAgentArgs, isCursorFailureOutput, runCursorDelegation } from "../acp-client.js";
 import { MODEL_PROFILES } from "../model-profiles.js";
@@ -10,6 +13,11 @@ import { MODEL_PROFILES } from "../model-profiles.js";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const scratch = join(root, ".tmp", `acp-test-${process.pid}`);
 const fakeAgent = join(scratch, "fake-agent.mjs");
+
+function hasTag(tag: string) {
+  return (cause: unknown): boolean =>
+    Boolean(cause && typeof cause === "object" && "_tag" in cause && cause._tag === tag);
+}
 
 const fakeAgentSource = `#!/usr/bin/env node
 import readline from "node:readline";
@@ -43,10 +51,9 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
   } else if (message.method === "session/set_mode") {
     send({ jsonrpc: "2.0", id: message.id, result: {} });
   } else if (message.method === "session/prompt") {
-    if (process.env.PI_CURSOR_ACP_FAKE_HANG === "1") return;
     const text = process.env.PI_CURSOR_ACP_FAKE_FAILURE === "1"
-      ? "Error: RetriableError: network unavailable"
-      : "verified output";
+      ? "Error: RetriableError: network unavailable" + (process.env.PI_CURSOR_ACP_FAKE_OUTPUT || "")
+      : process.env.PI_CURSOR_ACP_FAKE_OUTPUT || "verified output";
     send({ jsonrpc: "2.0", method: "session/update", params: {
       sessionId: "fake-session",
       update: {
@@ -54,6 +61,7 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
         content: { type: "text", text }
       }
     }});
+    if (process.env.PI_CURSOR_ACP_FAKE_HANG === "1") return;
     send({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
   }
 });
@@ -87,16 +95,18 @@ test("detects Cursor transport failures returned as message text", () => {
 });
 
 test("runs one ACP delegation and verifies the selected model", async () => {
-  const result = await runCursorDelegation({
-    cwd: root,
-    profile: MODEL_PROFILES.context,
-    task: "Inspect context",
-    policyPluginDir: join(root, "policy", "plugin"),
-    scratchRoot: scratch,
-    agentCommand: fakeAgent,
-    onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-    onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
-  });
+  const result = await Effect.runPromise(
+    runCursorDelegation({
+      cwd: root,
+      profile: MODEL_PROFILES.context,
+      task: "Inspect context",
+      policyPluginDir: join(root, "policy", "plugin"),
+      scratchRoot: scratch,
+      agentCommand: fakeAgent,
+      onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+      onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+    }),
+  );
   assert.equal(result.output, "verified output");
   assert.equal(result.modelId, "composer-2.5-fast");
   assert.equal(result.acpModelId, "composer-2.5[fast=true]");
@@ -104,96 +114,176 @@ test("runs one ACP delegation and verifies the selected model", async () => {
   assert.equal(result.stopReason, "end_turn");
 });
 
-test("rejects a silent model fallback", async () => {
-  await assert.rejects(
+test("preserves a UTF-8 preview and private spill file for one oversized line", async () => {
+  const fullOutput = "😀".repeat(Math.ceil(DEFAULT_MAX_BYTES / 4) + 1_000);
+  const result = await Effect.runPromise(
     runCursorDelegation({
       cwd: root,
       profile: MODEL_PROFILES.context,
-      task: "Inspect context",
+      task: "Produce large output",
       policyPluginDir: join(root, "policy", "plugin"),
       scratchRoot: scratch,
       agentCommand: fakeAgent,
-      testEnvironment: { PI_CURSOR_ACP_FAKE_MODEL: "gpt-5.4[reasoning=medium]" },
+      testEnvironment: { PI_CURSOR_ACP_FAKE_OUTPUT: fullOutput },
       onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
       onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
     }),
-    /not requested model/,
   );
+
+  assert.equal(result.truncated, true);
+  assert.ok(result.output.length > 0);
+  assert.ok(result.output.startsWith("😀"));
+  assert.equal(Buffer.from(result.output, "utf8").toString("utf8"), result.output);
+  assert.ok(Buffer.byteLength(result.output, "utf8") <= DEFAULT_MAX_BYTES);
+  assert.ok(result.fullOutputPath);
+  assert.equal(await readFile(result.fullOutputPath, "utf8"), fullOutput);
+  assert.equal((await stat(result.fullOutputPath)).mode & 0o777, 0o600);
 });
 
-test("does not spawn for a pre-aborted delegation", async () => {
-  const controller = new AbortController();
-  controller.abort();
-  const abortedScratch = join(scratch, "pre-aborted");
-
-  await assert.rejects(
+test("truncates output at Pi's line limit", async () => {
+  const fullOutput = Array.from({ length: DEFAULT_MAX_LINES + 100 }, () => "line").join("\n");
+  const result = await Effect.runPromise(
     runCursorDelegation({
       cwd: root,
       profile: MODEL_PROFILES.context,
-      task: "Do not start",
+      task: "Produce many lines",
       policyPluginDir: join(root, "policy", "plugin"),
-      scratchRoot: abortedScratch,
+      scratchRoot: scratch,
       agentCommand: fakeAgent,
-      signal: controller.signal,
+      testEnvironment: { PI_CURSOR_ACP_FAKE_OUTPUT: fullOutput },
       onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
       onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
     }),
-    /cancelled/,
   );
-  await assert.rejects(access(abortedScratch));
+
+  assert.equal(result.truncated, true);
+  assert.ok(result.output.split("\n").length <= DEFAULT_MAX_LINES);
+  assert.ok(result.fullOutputPath);
+  assert.equal(await readFile(result.fullOutputPath, "utf8"), fullOutput);
 });
 
-test("cancels a hanging ACP process", async () => {
+test("rejects a silent model fallback", async () => {
+  await assert.rejects(
+    Effect.runPromise(
+      runCursorDelegation({
+        cwd: root,
+        profile: MODEL_PROFILES.context,
+        task: "Inspect context",
+        policyPluginDir: join(root, "policy", "plugin"),
+        scratchRoot: scratch,
+        agentCommand: fakeAgent,
+        testEnvironment: { PI_CURSOR_ACP_FAKE_MODEL: "gpt-5.4[reasoning=medium]" },
+        onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+        onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+      }),
+    ),
+    hasTag("AcpModelMismatchError"),
+  );
+});
+
+test("does not spawn before the delegation Effect is executed", async () => {
+  const lazyScratch = join(scratch, "lazy");
+  runCursorDelegation({
+    cwd: root,
+    profile: MODEL_PROFILES.context,
+    task: "Do not start",
+    policyPluginDir: join(root, "policy", "plugin"),
+    scratchRoot: lazyScratch,
+    agentCommand: fakeAgent,
+    onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+    onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+  });
+  await assert.rejects(access(lazyScratch));
+});
+
+test("cancels a hanging ACP process and removes partial output", async () => {
+  const priorOutputFiles = new Set(
+    (await readdir(scratch)).filter((name) => name.startsWith("cursor-output-")),
+  );
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 50);
   await assert.rejects(
-    runCursorDelegation({
-      cwd: root,
-      profile: MODEL_PROFILES.context,
-      task: "Hang",
-      policyPluginDir: join(root, "policy", "plugin"),
-      scratchRoot: scratch,
-      agentCommand: fakeAgent,
-      testEnvironment: { PI_CURSOR_ACP_FAKE_HANG: "1" },
-      signal: controller.signal,
-      onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-      onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
-    }),
-    /cancelled/,
+    Effect.runPromise(
+      runCursorDelegation({
+        cwd: root,
+        profile: MODEL_PROFILES.context,
+        task: "Hang",
+        policyPluginDir: join(root, "policy", "plugin"),
+        scratchRoot: scratch,
+        agentCommand: fakeAgent,
+        testEnvironment: {
+          PI_CURSOR_ACP_FAKE_HANG: "1",
+          PI_CURSOR_ACP_FAKE_OUTPUT: "x".repeat(DEFAULT_MAX_BYTES + 1_000),
+        },
+        onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+        onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+      }),
+      { signal: controller.signal },
+    ),
+    /interrupted|cancelled/i,
+  );
+  assert.deepEqual(
+    new Set((await readdir(scratch)).filter((name) => name.startsWith("cursor-output-"))),
+    priorOutputFiles,
   );
 });
 
 test("times out and cleans up a hanging ACP process", async () => {
   await assert.rejects(
-    runCursorDelegation({
-      cwd: root,
-      profile: MODEL_PROFILES.context,
-      task: "Hang",
-      policyPluginDir: join(root, "policy", "plugin"),
-      scratchRoot: scratch,
-      agentCommand: fakeAgent,
-      testEnvironment: { PI_CURSOR_ACP_FAKE_HANG: "1" },
-      timeoutMs: 50,
-      onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-      onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
-    }),
+    Effect.runPromise(
+      runCursorDelegation({
+        cwd: root,
+        profile: MODEL_PROFILES.context,
+        task: "Hang",
+        policyPluginDir: join(root, "policy", "plugin"),
+        scratchRoot: scratch,
+        agentCommand: fakeAgent,
+        testEnvironment: { PI_CURSOR_ACP_FAKE_HANG: "1" },
+        timeoutMs: 50,
+        onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+        onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+      }),
+    ),
     /timed out/,
+  );
+  assert.equal(
+    (await readdir(scratch)).some((name) => name.startsWith("cursor-config-")),
+    false,
   );
 });
 
-test("fails when Cursor returns a transport error as output", async () => {
+test("fails on reported transport errors and removes captured output", async () => {
+  const priorOutputFiles = new Set(
+    (await readdir(scratch)).filter((name) => name.startsWith("cursor-output-")),
+  );
   await assert.rejects(
-    runCursorDelegation({
-      cwd: root,
-      profile: MODEL_PROFILES.context,
-      task: "Inspect context",
-      policyPluginDir: join(root, "policy", "plugin"),
-      scratchRoot: scratch,
-      agentCommand: fakeAgent,
-      testEnvironment: { PI_CURSOR_ACP_FAKE_FAILURE: "1" },
-      onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-      onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
-    }),
-    /transport or authentication failure/,
+    Effect.runPromise(
+      runCursorDelegation({
+        cwd: root,
+        profile: MODEL_PROFILES.context,
+        task: "Inspect context",
+        policyPluginDir: join(root, "policy", "plugin"),
+        scratchRoot: scratch,
+        agentCommand: fakeAgent,
+        testEnvironment: {
+          PI_CURSOR_ACP_FAKE_FAILURE: "1",
+          PI_CURSOR_ACP_FAKE_OUTPUT: "x".repeat(DEFAULT_MAX_BYTES + 1_000),
+        },
+        onPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+        onCursorRequest: async () => ({ outcome: { outcome: "cancelled" } }),
+      }),
+    ),
+    (cause: unknown) => {
+      if (!hasTag("CursorReportedFailureError")(cause)) return false;
+      const failure = cause as { output: string; message: string };
+      assert.ok(failure.output.startsWith("Error: RetriableError: network unavailable"));
+      assert.equal(failure.output.length, 16_000);
+      assert.ok(failure.message.endsWith(failure.output));
+      return true;
+    },
+  );
+  assert.deepEqual(
+    new Set((await readdir(scratch)).filter((name) => name.startsWith("cursor-output-"))),
+    priorOutputFiles,
   );
 });

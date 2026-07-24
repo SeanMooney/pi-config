@@ -15,9 +15,11 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.3.0"
+    "@agentclientprotocol/sdk": "1.3.0",
+    "effect": "^4.0.0-beta.101"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.0",
     "@earendil-works/pi-coding-agent": "0.82.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.21.0",
@@ -25,6 +27,7 @@
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "^0.82.0",
     "typebox": "*"
   },
@@ -33,6 +36,9 @@
       "optional": true
     },
     "typebox": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
       "optional": true
     }
   },
