@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "node ./scripts/policy-hook.mjs",
+        "matcher": "Task|MCP:.*|Write|Delete|StrReplace|Edit|MultiEdit|ApplyPatch|WebFetch|Browser",
+        "failClosed": true
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "node ./scripts/policy-hook.mjs",
+        "failClosed": true
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "node ./scripts/policy-hook.mjs",
+        "failClosed": true
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "node ./scripts/policy-hook.mjs",
+        "failClosed": true
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "node ./scripts/policy-hook.mjs",
+        "failClosed": true
+      }
+    ]
+  }
+}

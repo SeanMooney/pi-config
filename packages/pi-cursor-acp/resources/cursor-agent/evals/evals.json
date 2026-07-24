@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "skill_name": "cursor-agent",
+  "evals": [
+    {
+      "id": "cursor-context-default",
+      "type": "output_quality",
+      "prompt": "Ask Cursor to gather context on how the scheduler selects hosts, but do not change anything.",
+      "should_activate": true,
+      "expected_owner": "cursor-agent",
+      "expected_behavior": "Delegate one read-only context task using Composer 2.5 Fast and then verify the returned context.",
+      "expectations": [
+        "Uses intent context",
+        "Uses composer-2.5-fast and ask mode",
+        "Calls cursor_agent once",
+        "Does not modify files"
+      ]
+    },
+    {
+      "id": "cursor-implementation-default",
+      "type": "output_quality",
+      "prompt": "Use Cursor Agent to implement the validation change we just discussed and leave it uncommitted.",
+      "should_activate": true,
+      "expected_owner": "cursor-agent",
+      "expected_behavior": "Delegate one implementation using Cursor Grok 4.5 High Fast, inspect the diff, and validate it with Pi tools.",
+      "expectations": [
+        "Uses intent implement",
+        "Uses cursor-grok-4.5-high-fast and agent mode",
+        "Leaves changes uncommitted",
+        "Pi independently inspects and validates the result"
+      ]
+    },
+    {
+      "id": "cursor-review-default",
+      "type": "output_quality",
+      "prompt": "Have Cursor review my current diff for correctness and regressions.",
+      "should_activate": true,
+      "expected_owner": "cursor-agent",
+      "expected_behavior": "Delegate one read-only review using Cursor Grok 4.5 High Fast and verify findings before reporting them.",
+      "expectations": [
+        "Uses intent review",
+        "Uses cursor-grok-4.5-high-fast and ask mode",
+        "Does not modify files",
+        "Pi verifies review findings"
+      ]
+    },
+    {
+      "id": "cursor-explicit-override",
+      "type": "output_quality",
+      "prompt": "Ask Cursor to review this with cursor-grok-4.5-medium-fast instead of the review default.",
+      "should_activate": true,
+      "expected_owner": "cursor-agent",
+      "expected_behavior": "Honor the explicit available model override while preserving read-only review mode.",
+      "expectations": [
+        "Uses the explicitly requested model",
+        "Keeps intent review and ask mode",
+        "Does not silently select another model"
+      ]
+    },
+    {
+      "id": "cursor-incidental-mention",
+      "type": "near_miss",
+      "prompt": "Explain how Cursor ACP differs from Pi's RPC mode.",
+      "should_activate": false,
+      "expected_owner": "ordinary-reasoning",
+      "expected_behavior": "Answer the conceptual question without authorizing or invoking Cursor Agent.",
+      "expectations": [
+        "Does not call cursor_agent",
+        "Does not treat a product mention as delegation intent"
+      ]
+    },
+    {
+      "id": "cursor-normal-review",
+      "type": "near_miss",
+      "prompt": "Review my current diff for correctness.",
+      "should_activate": false,
+      "expected_owner": "ordinary-reasoning",
+      "expected_behavior": "Use Pi's normal review workflow because Cursor was not explicitly requested.",
+      "expectations": ["Does not call cursor_agent", "Uses normal Pi capabilities"]
+    },
+    {
+      "id": "cursor-pi-subagent",
+      "type": "near_miss",
+      "prompt": "Spawn three normal Pi review subagents for this branch.",
+      "should_activate": false,
+      "expected_owner": "pi-subagents",
+      "expected_behavior": "Use ordinary Pi subagents; Cursor Agent remains unavailable to their child runtimes.",
+      "expectations": [
+        "Does not call cursor_agent",
+        "Does not expose Cursor to Pi subagent children"
+      ]
+    }
+  ]
+}

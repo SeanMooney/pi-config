@@ -1,0 +1,11 @@
+{
+  "name": "pi-cursor-acp-policy",
+  "displayName": "Pi Cursor ACP Policy",
+  "version": "0.1.0",
+  "description": "Fail-closed policy for Cursor Agent delegations started by Pi.",
+  "author": {
+    "name": "Pi Cursor ACP"
+  },
+  "license": "MIT",
+  "keywords": ["cursor", "policy", "acp"]
+}

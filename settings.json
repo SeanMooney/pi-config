@@ -17,6 +17,7 @@
     "npm:pi-intercom@0.6.0",
     "npm:pi-smart-fetch@0.3.5",
     "./packages/pi-sandbox",
+    "./packages/pi-cursor-acp",
     "npm:@juicesharp/rpiv-ask-user-question@1.15.0",
     "npm:@juicesharp/rpiv-todo@1.15.0",
     "npm:@juicesharp/rpiv-advisor@1.15.0",

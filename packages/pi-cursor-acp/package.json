@@ -1,0 +1,44 @@
+{
+  "name": "pi-cursor-acp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Intentional Cursor Agent delegation for Pi over ACP",
+  "keywords": [
+    "acp",
+    "cursor",
+    "pi-extension",
+    "pi-package"
+  ],
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.21.0",
+    "typebox": "^1.0.48",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

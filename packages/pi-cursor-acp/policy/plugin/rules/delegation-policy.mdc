@@ -1,0 +1,10 @@
+---
+description: Mandatory restrictions for Cursor Agent work delegated by Pi
+alwaysApply: true
+---
+
+- Do not spawn subagents or delegate to Task, Explore, Bash, or Browser agents.
+- Do not use MCP tools or plugins other than this policy plugin.
+- Never commit, push, publish, open a pull request, or access credentials.
+- Stay within the current workspace and respect its repository instructions.
+- In Ask mode, remain read-only. In Agent mode, leave all edits uncommitted.
