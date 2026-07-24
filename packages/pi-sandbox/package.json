@@ -39,8 +39,8 @@
     "@carderne/sandbox-runtime": "^0.0.49"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.75.0",
-    "@earendil-works/pi-tui": "^0.75.0"
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@earendil-works/pi-tui": "^0.82.0"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
@@ -51,8 +51,8 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "0.75.4",
-    "@earendil-works/pi-tui": "0.75.4",
+    "@earendil-works/pi-coding-agent": "0.82.0",
+    "@earendil-works/pi-tui": "0.82.0",
     "@types/node": "^24",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.62.0",
