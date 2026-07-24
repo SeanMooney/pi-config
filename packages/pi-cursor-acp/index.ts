@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import { Type } from "typebox";
 
-import { isExcludedRuntime, isExplicitCursorRequest, OneShotAuthorization } from "./activation.js";
+import { DelegationGate, isExcludedRuntime } from "./runtime.js";
 import { runCursorDelegation } from "./acp-client.js";
 import { captureGitSnapshot, formatGitComparison, type GitSnapshot } from "./git-state.js";
 import { combineAbortSignals, DelegationLifecycle } from "./lifecycle.js";
@@ -44,14 +44,18 @@ export function notifyIfUI(ctx: Pick<ExtensionContext, "hasUI" | "ui">, message:
   if (ctx.hasUI) ctx.ui.notify(message, "info");
 }
 
-function setToolActive(pi: ExtensionAPI, active: boolean): void {
-  const current = pi.getActiveTools();
-  const next = active
-    ? [...new Set([...current, TOOL_NAME])]
-    : current.filter((name) => name !== TOOL_NAME);
-  if (next.length !== current.length || next.some((name, index) => name !== current[index])) {
-    pi.setActiveTools(next);
-  }
+export async function confirmDelegation(
+  ctx: Pick<ExtensionContext, "hasUI" | "ui">,
+  intent: CursorIntent,
+  model: string,
+  task: string,
+): Promise<boolean> {
+  if (!ctx.hasUI) return true;
+  const summary = task.length > 2_000 ? `${task.slice(0, 2_000)}\n\n[Task truncated]` : task;
+  return ctx.ui.confirm(
+    "Delegate to Cursor Agent?",
+    `Intent: ${intent}\nModel: ${model}\n\n${summary}`,
+  );
 }
 
 function permissionHandler(ctx: ExtensionContext) {
@@ -143,45 +147,31 @@ function formatResult(
   return sections.join("\n");
 }
 
-export default function cursorAcpExtension(pi: ExtensionAPI) {
-  if (isExcludedRuntime()) return;
+export default function cursorAcpExtension(
+  pi: ExtensionAPI,
+  runtime: { env?: NodeJS.ProcessEnv; argv?: readonly string[] } = {},
+) {
+  if (isExcludedRuntime(runtime.env ?? process.env, runtime.argv ?? process.argv)) return;
 
-  const authorization = new OneShotAuthorization();
   const lifecycle = new DelegationLifecycle();
-  let running = false;
+  const delegationGate = new DelegationGate();
   let activeDelegation: ReturnType<typeof runCursorDelegation> | undefined;
 
   pi.registerTool({
     name: TOOL_NAME,
     label: "Cursor Agent",
     description:
-      "Delegate one explicitly user-requested context, implementation, or review task to Cursor Agent. " +
-      "This tool is authorized only after the user explicitly asks to use Cursor.",
+      "Delegate an explicitly user-requested context, implementation, or review task to Cursor Agent. " +
+      "Call only when the user explicitly asks to involve Cursor; interactive sessions require confirmation.",
     parameters: CursorParameters,
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      if (!authorization.consume()) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Cursor Agent delegation is not authorized. The user must explicitly ask to use Cursor.",
-            },
-          ],
-          details: { authorized: false },
-          isError: true,
-        };
-      }
-      setToolActive(pi, false);
-
-      if (running) {
+      if (!delegationGate.tryStart()) {
         return {
           content: [{ type: "text", text: "A Cursor Agent delegation is already running." }],
           details: { busy: true },
           isError: true,
         };
       }
-      running = true;
-
       let before: GitSnapshot | undefined;
       try {
         const profile = resolveModelProfile(params.intent as CursorIntent, {
@@ -189,6 +179,19 @@ export default function cursorAcpExtension(pi: ExtensionAPI) {
           effort: params.effort as CursorEffort | undefined,
           speed: params.speed as CursorSpeed | undefined,
         });
+        const confirmed = await confirmDelegation(
+          ctx,
+          profile.intent,
+          profile.cliModelId,
+          params.task,
+        );
+        if (!confirmed) {
+          return {
+            content: [{ type: "text", text: "Cursor Agent delegation cancelled by the user." }],
+            details: { cancelled: true },
+          };
+        }
+
         await assertCursorVersion();
         const availableModels = await listCursorModelIds(SCRATCH_ROOT);
         if (!availableModels.has(profile.cliModelId)) {
@@ -262,34 +265,19 @@ export default function cursorAcpExtension(pi: ExtensionAPI) {
         };
       } finally {
         activeDelegation = undefined;
-        running = false;
+        delegationGate.finish();
       }
     },
   });
 
   pi.on("session_start", () => {
     lifecycle.reset();
-    authorization.clear();
-    setToolActive(pi, false);
   });
 
   pi.on("resources_discover", () => ({ skillPaths: [SKILL_DIR] }));
 
-  pi.on("input", (event) => {
-    if (!isExplicitCursorRequest(event.text)) return;
-    authorization.authorize();
-    setToolActive(pi, true);
-  });
-
-  pi.on("agent_end", () => {
-    authorization.clear();
-    setToolActive(pi, false);
-  });
-
   pi.on("session_shutdown", async () => {
     lifecycle.shutdown();
-    authorization.clear();
-    setToolActive(pi, false);
     await activeDelegation?.catch(() => undefined);
   });
 }

@@ -3,9 +3,9 @@
 `pi-cursor-acp` provides intentional Cursor Agent delegation from Pi through the
 official Cursor CLI's ACP server.
 
-Cursor is not a Pi model provider. The package registers a one-shot
-`cursor_agent` tool and conditionally exposes the `cursor-agent` skill. Both are
-absent from Pi subagent children and from Pi sessions using `--ssh`.
+Cursor is not a Pi model provider. The package registers a `cursor_agent` tool
+and exposes the `cursor-agent` skill in eligible main sessions. Both are absent
+from Pi subagent children and from Pi sessions using `--ssh`.
 
 ## Prerequisites
 
@@ -40,10 +40,17 @@ Have Cursor review my current diff.
 /skill:cursor-agent review the current diff
 ```
 
-Natural-language requests are recognized when they contain both `Cursor` and a
-delegation action such as review, implement, inspect, gather, or analyze.
-Incidental mentions without an action do not authorize the tool. Authorization
-is consumed by one tool call and cleared after the Pi agent run.
+The tool remains visible so the main model can apply the skill's
+natural-language intent rules. The model must not invoke it for incidental
+mentions, conceptual questions, or negated requests. Interactive sessions show a
+final confirmation with the intent, model, and task before every delegation.
+Headless sessions trust the model's explicit-request judgment. Multiple
+sequential delegations are allowed.
+
+For a parallel review, the main model can launch `cursor_agent` in the same
+parallel tool batch as an asynchronous ordinary Pi reviewer. Cursor runs as a
+separate ACP process and streams tool progress while the Pi subagent is tracked
+through its run status. The Pi child never receives `cursor_agent`.
 
 ## Default profiles
 

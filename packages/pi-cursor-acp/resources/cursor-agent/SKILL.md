@@ -12,8 +12,11 @@ license: MIT
 # Cursor Agent
 
 Use this skill only after an explicit user request to involve Cursor Agent. The
-`cursor_agent` tool is authorized for one delegation in that turn. Never invoke
-it proactively.
+tool is always visible in eligible main sessions, so the model owns this intent
+decision: never invoke it proactively, for a negated request, or for a question
+that merely mentions Cursor. Interactive sessions ask the user for final
+confirmation before each delegation; headless sessions rely entirely on this
+explicit-request rule.
 
 ## Process
 
@@ -27,9 +30,15 @@ it proactively.
    - `context`: `composer-2.5-fast` in Cursor `ask` mode.
    - `implement`: `cursor-grok-4.5-high-fast` in Cursor `agent` mode.
    - `review`: `cursor-grok-4.5-high-fast` in Cursor `ask` mode.
-4. Call `cursor_agent` exactly once. Do not delegate through an ordinary Pi
-   subagent and do not ask an ordinary subagent to call Cursor.
-5. Evaluate Cursor's result rather than accepting it automatically.
+4. Call `cursor_agent` once for each delegation the user requested. Multiple
+   sequential calls are allowed, and interactive sessions confirm each one. Do
+   not ask an ordinary Pi subagent to call Cursor.
+5. When the user requests Cursor and ordinary Pi reviewers in parallel, launch
+   `cursor_agent` from the main thread in the same parallel tool batch as the Pi
+   subagent call. Monitor Cursor through its tool updates and the Pi child
+   through the subagent run status; the Pi child still cannot access
+   `cursor_agent` itself.
+6. Evaluate Cursor's result rather than accepting it automatically.
    - For implementation, inspect the resulting diff and run appropriate
      validation with Pi's own tools.
    - For review, verify findings against the code before presenting them.
@@ -38,6 +47,7 @@ it proactively.
 ## Guardrails
 
 - Cursor-native subagents and MCP tools are prohibited.
+- Ordinary Pi subagent children must never receive the `cursor_agent` tool.
 - Cursor must not commit, push, publish, open pull requests, or access secrets.
 - Cursor implementation edits the current worktree and leaves changes
   uncommitted.

@@ -3,41 +3,25 @@ import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import cursorAcpExtension, { notifyIfUI } from "../index.js";
+import cursorAcpExtension, { confirmDelegation, notifyIfUI } from "../index.js";
 
 type Handler = (...args: any[]) => any;
+type RegisteredTool = { name: string; execute: Handler };
 
-function extensionHarness() {
-  let activeTools = ["read"];
-  let registeredTool: { name: string } | undefined;
+function extensionHarness(env: NodeJS.ProcessEnv = {}, argv: readonly string[] = ["pi"]) {
+  let registeredTool: RegisteredTool | undefined;
   const handlers = new Map<string, Handler[]>();
   const pi = {
-    registerTool(tool: { name: string }) {
+    registerTool(tool: RegisteredTool) {
       registeredTool = tool;
     },
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
-    getActiveTools() {
-      return [...activeTools];
-    },
-    setActiveTools(tools: string[]) {
-      activeTools = [...tools];
-    },
   } as unknown as ExtensionAPI;
 
-  const subagentChild = process.env.PI_SUBAGENT_CHILD;
-  try {
-    delete process.env.PI_SUBAGENT_CHILD;
-    cursorAcpExtension(pi);
-  } finally {
-    if (subagentChild === undefined) delete process.env.PI_SUBAGENT_CHILD;
-    else process.env.PI_SUBAGENT_CHILD = subagentChild;
-  }
+  cursorAcpExtension(pi, { env, argv });
   return {
-    get activeTools() {
-      return activeTools;
-    },
     get registeredTool() {
       return registeredTool;
     },
@@ -49,23 +33,131 @@ function extensionHarness() {
   };
 }
 
-test("extension wiring activates the tool for natural language and clears it", async () => {
-  const harness = extensionHarness();
-  assert.equal(harness.registeredTool?.name, "cursor_agent");
-  assert.deepEqual(harness.activeTools, ["read"]);
+test("eligible main sessions always register the Cursor tool", () => {
+  assert.equal(extensionHarness().registeredTool?.name, "cursor_agent");
+});
 
-  await harness.handler("input")({ text: "do the cursor review from the main thread" });
-  assert.deepEqual(harness.activeTools, ["read", "cursor_agent"]);
-
-  await harness.handler("agent_end")();
-  assert.deepEqual(harness.activeTools, ["read"]);
+test("subagent and Pi SSH runtimes do not register the Cursor tool", () => {
+  assert.equal(extensionHarness({ PI_SUBAGENT_CHILD: "1" }).registeredTool, undefined);
+  assert.equal(extensionHarness({ PI_SSH_MODE_ACTIVE: "1" }).registeredTool, undefined);
+  assert.equal(extensionHarness({ PI_SSH_REMOTE: "host" }).registeredTool, undefined);
+  assert.equal(extensionHarness({}, ["pi", "--ssh", "host"]).registeredTool, undefined);
 });
 
 test("resource discovery exposes only the extension skill root", async () => {
-  const harness = extensionHarness();
-  const resources = await harness.handler("resources_discover")();
+  const resources = await extensionHarness().handler("resources_discover")();
   assert.equal(resources.skillPaths.length, 1);
   assert.match(resources.skillPaths[0], /packages\/pi-cursor-acp\/resources$/);
+});
+
+test("interactive delegation requires final confirmation", async () => {
+  let prompt = "";
+  const confirmed = await confirmDelegation(
+    {
+      hasUI: true,
+      ui: {
+        async confirm(_title: string, message: string) {
+          prompt = message;
+          return false;
+        },
+      },
+    } as never,
+    "review",
+    "cursor-grok-4.5-high-fast",
+    "Review commit 123",
+  );
+
+  assert.equal(confirmed, false);
+  assert.match(prompt, /Intent: review/);
+  assert.match(prompt, /Model: cursor-grok-4\.5-high-fast/);
+  assert.match(prompt, /Review commit 123/);
+});
+
+test("confirmation truncates long tasks", async () => {
+  let prompt = "";
+  await confirmDelegation(
+    {
+      hasUI: true,
+      ui: {
+        async confirm(_title: string, message: string) {
+          prompt = message;
+          return false;
+        },
+      },
+    } as never,
+    "context",
+    "composer-2.5-fast",
+    "x".repeat(3_000),
+  );
+  assert.match(prompt, /\[Task truncated\]$/);
+  assert.ok(prompt.length < 2_100);
+});
+
+test("declined calls are non-errors and release the delegation gate", async () => {
+  const tool = extensionHarness().registeredTool;
+  assert.ok(tool);
+  let confirmations = 0;
+  const ctx = {
+    hasUI: true,
+    ui: {
+      async confirm() {
+        confirmations += 1;
+        return false;
+      },
+    },
+  } as never;
+  const invoke = () =>
+    tool.execute(
+      "call-id",
+      { intent: "review", task: "Review the commit" },
+      new AbortController().signal,
+      undefined,
+      ctx,
+    );
+
+  for (let count = 0; count < 2; count += 1) {
+    const result = await invoke();
+    assert.equal(result.details.cancelled, true);
+    assert.notEqual(result.isError, true);
+  }
+  assert.equal(confirmations, 2);
+});
+
+test("overlapping Cursor calls are rejected", async () => {
+  const tool = extensionHarness().registeredTool;
+  assert.ok(tool);
+  let releaseConfirmation: ((confirmed: boolean) => void) | undefined;
+  const confirmation = new Promise<boolean>((resolve) => {
+    releaseConfirmation = resolve;
+  });
+  const ctx = {
+    hasUI: true,
+    ui: { confirm: () => confirmation },
+  } as never;
+  const args = [
+    "call-id",
+    { intent: "review", task: "Review the commit" },
+    new AbortController().signal,
+    undefined,
+    ctx,
+  ] as const;
+
+  const first = tool.execute(...args);
+  const second = await tool.execute(...args);
+  assert.equal(second.details.busy, true);
+  assert.equal(second.isError, true);
+  releaseConfirmation?.(false);
+  await first;
+});
+
+test("headless delegation trusts the skill decision", async () => {
+  const confirmed = await confirmDelegation(
+    { hasUI: false, ui: {} } as never,
+    "context",
+    "composer-2.5-fast",
+    "Gather context",
+  );
+  assert.equal(confirmed, true);
 });
 
 test("headless notification is a no-op", () => {

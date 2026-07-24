@@ -45,6 +45,20 @@
       ]
     },
     {
+      "id": "cursor-parallel-review",
+      "type": "output_quality",
+      "prompt": "Use Cursor and an Opus 4.6 Pi subagent to review the current commit in parallel.",
+      "should_activate": true,
+      "expected_owner": "cursor-agent",
+      "expected_behavior": "Launch cursor_agent from the main thread in parallel with an ordinary Opus 4.6 Pi reviewer, then verify and synthesize both reviews.",
+      "expectations": [
+        "Calls cursor_agent directly from the main thread",
+        "Launches the Pi reviewer concurrently",
+        "Does not ask the Pi child to invoke Cursor",
+        "Monitors and synthesizes both results"
+      ]
+    },
+    {
       "id": "cursor-explicit-override",
       "type": "output_quality",
       "prompt": "Ask Cursor to review this with cursor-grok-4.5-medium-fast instead of the review default.",
@@ -63,11 +77,29 @@
       "prompt": "Explain how Cursor ACP differs from Pi's RPC mode.",
       "should_activate": false,
       "expected_owner": "ordinary-reasoning",
-      "expected_behavior": "Answer the conceptual question without authorizing or invoking Cursor Agent.",
+      "expected_behavior": "Answer the conceptual question without invoking Cursor Agent.",
       "expectations": [
         "Does not call cursor_agent",
         "Does not treat a product mention as delegation intent"
       ]
+    },
+    {
+      "id": "cursor-negated-request",
+      "type": "near_miss",
+      "prompt": "Please do not use Cursor for this review.",
+      "should_activate": false,
+      "expected_owner": "ordinary-reasoning",
+      "expected_behavior": "Honor the negation and do not invoke Cursor Agent.",
+      "expectations": ["Does not call cursor_agent", "Does not ask for Cursor confirmation"]
+    },
+    {
+      "id": "cursor-meta-question",
+      "type": "near_miss",
+      "prompt": "How do I use Cursor Agent for reviews?",
+      "should_activate": false,
+      "expected_owner": "ordinary-reasoning",
+      "expected_behavior": "Answer the conceptual question without invoking Cursor Agent.",
+      "expectations": ["Does not call cursor_agent", "Explains rather than delegates"]
     },
     {
       "id": "cursor-normal-review",
