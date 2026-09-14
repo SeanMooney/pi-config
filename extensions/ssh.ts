@@ -14,6 +14,7 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type BashOperations,
@@ -25,6 +26,9 @@ import {
   type ReadOperations,
   type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import { createLocalReadRegistry } from "./ssh/local-read-registry.ts";
+import { createSkillLocalReadPolicy } from "./ssh/skill-local-read-policy.ts";
+import { createHybridReadExecutor } from "./ssh/hybrid-read-router.ts";
 
 const EXIT_STDIO_GRACE_MS = 100;
 const SSH_MODE_ENV = "PI_SSH_MODE_ACTIVE";
@@ -105,9 +109,13 @@ function killProcessTree(child: ChildProcess): void {
 
 function sshExec(remote: string, command: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", remote, command], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const child = spawn(
+      "ssh",
+      ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", remote, command],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
     const chunks: Buffer[] = [];
     const errChunks: Buffer[] = [];
     child.stdout.on("data", (data) => chunks.push(data));
@@ -124,19 +132,31 @@ function sshExec(remote: string, command: string): Promise<Buffer> {
 }
 
 function toRemotePath(path: string, remoteCwd: string, localCwd: string): string {
-  return path.startsWith(localCwd) ? path.replace(localCwd, remoteCwd) : path;
+  const remainder = relative(localCwd, path);
+  if (remainder === "") return remoteCwd;
+  const traversesParent = remainder === ".." || remainder.startsWith(`..${sep}`);
+  if (!traversesParent && !isAbsolute(remainder)) return join(remoteCwd, remainder);
+  return path;
 }
 
 function createRemoteReadOps(remote: string, remoteCwd: string, localCwd: string): ReadOperations {
   return {
-    readFile: (path) => sshExec(remote, `cat ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`),
+    readFile: (path) =>
+      sshExec(remote, `cat ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`),
     access: (path) =>
-      sshExec(remote, `test -r ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`).then(() => {}),
+      sshExec(remote, `test -r ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`).then(
+        () => {},
+      ),
     detectImageMimeType: async (path) => {
       try {
-        const result = await sshExec(remote, `file --mime-type -b ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`);
+        const result = await sshExec(
+          remote,
+          `file --mime-type -b ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`,
+        );
         const mimeType = result.toString().trim();
-        return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimeType) ? mimeType : null;
+        return ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimeType)
+          ? mimeType
+          : null;
       } catch {
         return null;
       }
@@ -144,13 +164,23 @@ function createRemoteReadOps(remote: string, remoteCwd: string, localCwd: string
   };
 }
 
-function createRemoteWriteOps(remote: string, remoteCwd: string, localCwd: string): WriteOperations {
+function createRemoteWriteOps(
+  remote: string,
+  remoteCwd: string,
+  localCwd: string,
+): WriteOperations {
   return {
     writeFile: async (path, content) => {
       const b64 = Buffer.from(content).toString("base64");
-      await sshExec(remote, `echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`);
+      await sshExec(
+        remote,
+        `echo ${JSON.stringify(b64)} | base64 -d > ${JSON.stringify(toRemotePath(path, remoteCwd, localCwd))}`,
+      );
     },
-    mkdir: (dir) => sshExec(remote, `mkdir -p ${JSON.stringify(toRemotePath(dir, remoteCwd, localCwd))}`).then(() => {}),
+    mkdir: (dir) =>
+      sshExec(remote, `mkdir -p ${JSON.stringify(toRemotePath(dir, remoteCwd, localCwd))}`).then(
+        () => {},
+      ),
   };
 }
 
@@ -165,10 +195,14 @@ function createRemoteBashOps(remote: string, remoteCwd: string, localCwd: string
     exec: (command, cwd, { onData, signal, timeout }) =>
       new Promise((resolve, reject) => {
         const cmd = `cd ${JSON.stringify(toRemotePath(cwd, remoteCwd, localCwd))} && ${command}`;
-        const child = spawn("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", remote, cmd], {
-          detached: process.platform !== "win32",
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        const child = spawn(
+          "ssh",
+          ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", remote, cmd],
+          {
+            detached: process.platform !== "win32",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
         let timedOut = false;
         let timeoutHandle: NodeJS.Timeout | undefined;
 
@@ -222,12 +256,18 @@ async function resolveRemoteCwd(remote: string, requestedCwd?: string): Promise<
 }
 
 export default function sshExtension(pi: ExtensionAPI) {
-  pi.registerFlag("ssh", { description: "SSH remote: user@host or user@host:/path", type: "string" });
+  pi.registerFlag("ssh", {
+    description: "SSH remote: user@host or user@host:/path",
+    type: "string",
+  });
   pi.registerFlag("ssh-cwd", { description: "Remote working directory for --ssh", type: "string" });
 
   if (argvHasSshFlag() || process.env[SSH_REMOTE_ENV]) process.env[SSH_MODE_ENV] = "1";
 
   const localCwd = process.cwd();
+  const localReadRegistry = createLocalReadRegistry();
+  const skillTreesOwner = Symbol("ssh-skill-trees");
+  const skillLocalReadPolicy = createSkillLocalReadPolicy(localReadRegistry, skillTreesOwner);
   let resolvedSsh: { remote: string; remoteCwd: string } | null = null;
   let sshRequested = false;
   let sshStartupError: Error | null = null;
@@ -236,7 +276,8 @@ export default function sshExtension(pi: ExtensionAPI) {
   function getSsh() {
     if (resolvedSsh) return resolvedSsh;
     if (sshStartupError) throw sshStartupError;
-    if (sshRequested) throw new Error("SSH mode was requested but the remote connection is not ready");
+    if (sshRequested)
+      throw new Error("SSH mode was requested but the remote connection is not ready");
     return null;
   }
 
@@ -244,10 +285,14 @@ export default function sshExtension(pi: ExtensionAPI) {
     if (remoteToolsRegistered || !resolvedSsh) return;
     remoteToolsRegistered = true;
 
+    const localRead = createReadTool(localCwd);
+    const remoteRead = createReadTool(localCwd, {
+      operations: createRemoteReadOps(resolvedSsh.remote, resolvedSsh.remoteCwd, localCwd),
+    });
+    const hybridRead = createHybridReadExecutor(localRead, remoteRead, localReadRegistry);
     pi.registerTool({
-      ...createReadTool(localCwd, {
-        operations: createRemoteReadOps(resolvedSsh.remote, resolvedSsh.remoteCwd, localCwd),
-      }),
+      ...remoteRead,
+      execute: hybridRead.execute,
       label: "read (ssh)",
     });
 
@@ -285,20 +330,29 @@ export default function sshExtension(pi: ExtensionAPI) {
     const inheritedCwd = process.env[SSH_CWD_ENV];
 
     try {
-      const remoteCwd = await resolveRemoteCwd(parsed.remote, sshCwd ?? parsed.remoteCwd ?? inheritedCwd);
+      const remoteCwd = await resolveRemoteCwd(
+        parsed.remote,
+        sshCwd ?? parsed.remoteCwd ?? inheritedCwd,
+      );
       resolvedSsh = { remote: parsed.remote, remoteCwd };
       process.env[SSH_REMOTE_ENV] = resolvedSsh.remote;
       process.env[SSH_CWD_ENV] = resolvedSsh.remoteCwd;
       sshStartupError = null;
       registerRemoteTools();
 
-      ctx.ui.setStatus("ssh", ctx.ui.theme.fg("accent", `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`));
+      ctx.ui.setStatus(
+        "ssh",
+        ctx.ui.theme.fg("accent", `SSH: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`),
+      );
       ctx.ui.notify(`SSH mode: ${resolvedSsh.remote}:${resolvedSsh.remoteCwd}`, "info");
     } catch (err) {
       sshStartupError = err instanceof Error ? err : new Error(String(err));
       resolvedSsh = null;
       ctx.ui.setStatus("ssh", ctx.ui.theme.fg("error", "SSH failed"));
-      ctx.ui.notify(`SSH connection failed for ${parsed.remote}: ${sshStartupError.message}`, "error");
+      ctx.ui.notify(
+        `SSH connection failed for ${parsed.remote}: ${sshStartupError.message}`,
+        "error",
+      );
       ctx.shutdown();
     }
   });
@@ -309,9 +363,29 @@ export default function sshExtension(pi: ExtensionAPI) {
     return { operations: createRemoteBashOps(ssh.remote, ssh.remoteCwd, localCwd) };
   });
 
-  pi.on("before_agent_start", async (event) => {
+  pi.on("session_shutdown", () => {
+    localReadRegistry.remove(skillTreesOwner);
+    localReadRegistry.clear();
+    skillLocalReadPolicy.reset();
+  });
+
+  pi.on("before_agent_start", async (event, ctx) => {
     const ssh = getSsh();
     if (!ssh) return;
+
+    const report = await skillLocalReadPolicy.refresh(event.systemPromptOptions.skills);
+    if (report.rejected.length > 0) {
+      ctx.ui.notify(
+        `${report.rejected.length} discovered skill tree(s) are unavailable for local SSH reads`,
+        "warning",
+      );
+    }
+    if (report.changed && report.standaloneParentTrees.length > 0) {
+      ctx.ui.notify(
+        `${report.standaloneParentTrees.length} standalone Markdown skill(s) grant local reads to their shared parent tree(s)`,
+        "info",
+      );
+    }
 
     return {
       systemPrompt: event.systemPrompt.replace(
