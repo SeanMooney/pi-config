@@ -2,17 +2,20 @@
   "name": "pi-extensions",
   "private": true,
   "dependencies": {
-    "@juicesharp/rpiv-advisor": "^1.15.0",
-    "@juicesharp/rpiv-ask-user-question": "^1.15.0",
-    "@juicesharp/rpiv-todo": "^1.15.0",
-    "pi-btw": "^0.4.0",
-    "pi-intercom": "^0.6.0",
-    "pi-mcp-adapter": "^2.6.1",
-    "pi-smart-fetch": "^0.3.5",
-    "pi-subagents": "^0.24.3"
+    "@juicesharp/rpiv-advisor": "^2.10.1",
+    "@juicesharp/rpiv-ask-user-question": "^2.10.1",
+    "@juicesharp/rpiv-todo": "^2.10.1",
+    "pi-btw": "^0.4.1",
+    "pi-intercom": "^0.13.0",
+    "pi-mcp-adapter": "^2.32.0",
+    "pi-smart-fetch": "^0.3.17",
+    "pi-subagents": "^0.67.0"
   },
   "devDependencies": {
-    "markdownlint-cli2": "0.23.0",
+    "markdownlint-cli2": "0.23.2",
     "oxfmt": "0.58.0"
+  },
+  "overrides": {
+    "smol-toml": "1.8.0"
   }
 }

@@ -104,7 +104,10 @@ if (mcp?.mcpServers) {
 if (write && changed) {
   writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   if (mcp) writeFileSync(mcpPath, `${JSON.stringify(mcp, null, 2)}\n`);
-  console.log("\nUpdated pins. Run `pi install` or restart Pi to sync installed packages if needed.");
+  console.log(
+    '\nUpdated pins. Run `(cd "$PI_CODING_AGENT_DIR/npm" && npm install)` ' +
+      "and restart Pi or run `/reload`.",
+  );
 } else if (write) {
   console.log("\nAll checked pins are already current.");
 } else {

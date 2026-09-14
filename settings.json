@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.82.0",
+  "lastChangelogVersion": "0.85.1",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "medium",
@@ -12,16 +12,16 @@
   "theme": "dark",
   "sessionDir": "~/.local/state/pi/sessions",
   "packages": [
-    "npm:pi-mcp-adapter@2.6.1",
-    "npm:pi-subagents@0.24.3",
-    "npm:pi-intercom@0.6.0",
-    "npm:pi-smart-fetch@0.3.5",
+    "npm:pi-mcp-adapter@2.32.0",
+    "npm:pi-subagents@0.67.0",
+    "npm:pi-intercom@0.13.0",
+    "npm:pi-smart-fetch@0.3.17",
     "./packages/pi-sandbox",
     "./packages/pi-cursor-acp",
-    "npm:@juicesharp/rpiv-ask-user-question@1.15.0",
-    "npm:@juicesharp/rpiv-todo@1.15.0",
-    "npm:@juicesharp/rpiv-advisor@1.15.0",
-    "npm:pi-btw@0.4.0"
+    "npm:@juicesharp/rpiv-ask-user-question@2.10.1",
+    "npm:@juicesharp/rpiv-todo@2.10.1",
+    "npm:@juicesharp/rpiv-advisor@2.10.1",
+    "npm:pi-btw@0.4.1"
   ],
   "skills": [
     "~/repos/openstack-ai-style-guide/plugins/teim-review/skills",
@@ -32,6 +32,7 @@
     "vertex-claude/sonnet",
     "vertex-claude/opus",
     "google-vertex/gemini-3.6-flash",
+    "openai-codex/gpt-6-astra",
     "openai-codex/gpt-5.6-sol",
     "openai-codex/gpt-5.6-terra",
     "zai/glm-5.2",

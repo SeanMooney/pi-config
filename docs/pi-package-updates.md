@@ -1,9 +1,9 @@
 # Updating pinned Pi packages
 
 This profile pins Pi package and MCP npx package versions in `settings.json` and
-`mcp.json` for reproducibility. Pi's built-in `pi update` is still useful for the
-Pi CLI itself and any unpinned packages, but pinned package specs are intentionally
-skipped until their pins move.
+`mcp.json` for reproducibility. Pi's built-in `pi update` is still useful for
+the Pi CLI itself and any unpinned packages, but pinned package specs are
+intentionally skipped until their pins move.
 
 Use the helper from `PI_CODING_AGENT_DIR`:
 
@@ -18,8 +18,13 @@ To update the pins intentionally:
 
 ```bash
 scripts/check-pi-package-updates.mjs --write
-pi install
+(cd "$PI_CODING_AGENT_DIR/npm" && npm install)
 ```
+
+Review package installability before accepting every reported latest version. A
+registry release may depend on an inaccessible preview artifact; in that case,
+retain the newest version that installs successfully and keep the manifest and
+settings pin aligned.
 
 Then restart Pi or run `/reload` as appropriate. Review the resulting git diff
 before committing.
