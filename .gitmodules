@@ -1,0 +1,6 @@
+[submodule "vendor/cursor-plugins"]
+	path = vendor/cursor-plugins
+	url = https://github.com/cursor/plugins.git
+[submodule "vendor/ponytail"]
+	path = vendor/ponytail
+	url = https://github.com/DietrichGebert/ponytail.git

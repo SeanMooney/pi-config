@@ -26,7 +26,10 @@
   "skills": [
     "~/repos/openstack-ai-style-guide/plugins/teim-review/skills",
     "~/repos/agentic-workflows/.agents/skills",
-    "~/repos/jira-work/plugins/jira-work/skills"
+    "~/repos/jira-work/plugins/jira-work/skills",
+    "./vendor/cursor-plugins/pstack/skills/unslop",
+    "./vendor/cursor-plugins/pstack/skills/technical-writing",
+    "./vendor/ponytail/skills/ponytail"
   ],
   "enabledModels": [
     "vertex-claude/sonnet",
