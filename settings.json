@@ -24,9 +24,8 @@
     "npm:pi-btw@0.4.1"
   ],
   "skills": [
-    "~/repos/openstack-ai-style-guide/plugins/teim-review/skills",
-    "~/repos/agentic-workflows/.agents/skills",
-    "~/repos/jira-work/plugins/jira-work/skills",
+    "~/repos/github.com/SeanMooney/openstack-ai-style-guide/plugins/teim-review/skills",
+    "~/repos/opendev.org/openstack/agentic-workflows/.agents/skills",
     "./vendor/cursor-plugins/pstack/skills/unslop",
     "./vendor/cursor-plugins/pstack/skills/technical-writing",
     "./vendor/ponytail/skills/ponytail"
