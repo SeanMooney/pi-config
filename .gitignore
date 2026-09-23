@@ -23,4 +23,5 @@ tools/
 *.log
 mcp-cache.json
 mcp-npx-cache.json
+models-store.json
 intercom/

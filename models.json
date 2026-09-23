@@ -1,0 +1,73 @@
+{
+  "providers": {
+    "litellm": {
+      "baseUrl": "http://192.168.19.1:4000/v1",
+      "api": "openai-completions",
+      "compat": {
+        "supportsStore": false,
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": true,
+        "maxTokensField": "max_tokens",
+        "thinkingFormat": "zai",
+        "supportsStrictMode": true,
+        "zaiToolStream": true
+      },
+      "models": [
+        {
+          "id": "fast",
+          "name": "LiteLLM Fast",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "low",
+            "high": "high",
+            "xhigh": "high",
+            "max": "max"
+          },
+          "input": ["text", "image"],
+          "cost": {
+            "input": 0.15,
+            "output": 0.5,
+            "cacheRead": 0.03,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 0.95
+          }
+        },
+        {
+          "id": "smart",
+          "name": "LiteLLM Smart",
+          "reasoning": true,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "low",
+            "high": "high",
+            "xhigh": "high",
+            "max": "max"
+          },
+          "input": ["text"],
+          "cost": {
+            "input": 1.4,
+            "output": 4.4,
+            "cacheRead": 0.26,
+            "cacheWrite": 0
+          },
+          "contextWindow": 1000000,
+          "maxTokens": 131072,
+          "samplingParams": {
+            "temperature": 1.0,
+            "top_p": 0.95
+          }
+        }
+      ]
+    }
+  }
+}
