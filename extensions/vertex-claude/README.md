@@ -26,6 +26,8 @@ precedence over native Anthropic retirement dates:
 Current manifest entries include:
 
 ```text
+claude-opus-5-5
+claude-opus-5
 claude-opus-4-8
 claude-opus-4-7
 claude-opus-4-6
@@ -45,7 +47,7 @@ Aliases are computed independently per family and point to the newest active,
 non-deprecated manifest entry:
 
 ```text
-opus, claude-opus       -> claude-opus-4-8
+opus, claude-opus       -> claude-opus-5-5
 sonnet, claude-sonnet   -> claude-sonnet-5
 haiku, claude-haiku     -> claude-haiku-4-5@20251001
 fable, claude-fable     -> claude-fable-5
@@ -53,6 +55,28 @@ fable, claude-fable     -> claude-fable-5
 
 A major-5 Sonnet or Fable never suppresses registered major-4 Opus or Haiku
 models.
+
+## Alias configuration
+
+Optional family overrides live in `$PI_CODING_AGENT_DIR/vertex-claude.json`.
+Each configured family controls both its short and prefixed aliases; for
+example, `opus` controls both `opus` and `claude-opus`:
+
+```json
+{
+  "aliases": {
+    "opus": "claude-opus-4-6"
+  }
+}
+```
+
+Supported keys are `opus`, `sonnet`, `haiku`, and `fable`. Omitted families keep
+the automatic latest-model selection described above. Targets must be concrete
+registered model IDs in the matching family. This also means a target must
+appear in `VERTEX_CLAUDE_MODELS` when that model-list override is active.
+Malformed configuration, unknown families, wrong-family targets, and
+unregistered targets fail extension loading rather than silently selecting a
+different model. Run `/reload` or restart Pi after changing the file.
 
 ## Requirements and installation
 
@@ -110,7 +134,7 @@ added and aliases are derived only from the supplied comma-separated list:
 
 ```bash
 export VERTEX_CLAUDE_MODELS=\
-"claude-opus-4-8,claude-sonnet-5,claude-haiku-4-5@20251001,claude-fable-5"
+"claude-opus-5-5,claude-sonnet-5,claude-haiku-4-5@20251001,claude-fable-5"
 ```
 
 Known manifest IDs retain their documented metadata. A syntactically valid,
@@ -119,7 +143,7 @@ registered rather than silently discarded. It uses conservative Vertex defaults
 (reasoning and text/image input, 200K context, 64K output, zero cost) until Pi
 gains catalog metadata.
 
-IDs must use a recognized family/version form such as `claude-opus-4-8` or
+IDs must use a recognized family/version form such as `claude-opus-5-5` or
 `claude-3-5-haiku@20241022`; malformed IDs are rejected. An empty or malformed
 override throws a clear extension configuration error and never falls back to
 the manifest. Pi's extension loader may swallow that load error. In that case,
@@ -137,8 +161,12 @@ metadata:
 - `reasoning` and `thinkingLevelMap`;
 - `input`, `cost`, `contextWindow`, and `maxTokens`.
 
-Consequently Pi 0.80.6 metadata improvements, including 1M context, 128K output,
-and adaptive effort maps, flow to matching Vertex models automatically.
+Consequently current Pi metadata improvements, including 1M context, 128K
+output, and adaptive effort maps, flow to matching Vertex models automatically.
+Until Pi includes a native Claude Opus 5.5 catalog entry, the extension carries
+an exact fallback from the published model specification: 1M context, 128K
+output, adaptive thinking that defaults to medium effort, and current token and
+cache pricing. A future native Pi entry takes precedence automatically.
 
 The custom `streamSimple` retains the `AnthropicVertex` client injection.
 Adaptive models use adaptive thinking with effort and no legacy token budget;
@@ -169,7 +197,7 @@ vertex-claude/sonnet
 vertex-claude/opus
 vertex-claude/haiku
 vertex-claude/fable
-vertex-claude/claude-opus-4-8
+vertex-claude/claude-opus-5-5
 ```
 
 ## Diagnostics
@@ -178,7 +206,7 @@ Use the interactive Pi command:
 
 ```text
 /vertex-claude-diagnose
-/vertex-claude-diagnose claude-opus-4-8
+/vertex-claude-diagnose claude-opus-5-5
 ```
 
 Without a model, the command validates project/region configuration, constructs

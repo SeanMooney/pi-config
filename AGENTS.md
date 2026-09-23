@@ -13,6 +13,9 @@ Nix Home Manager.
   the user for help.
 - Prefer repository-relative paths when editing this config repo, and mention
   the corresponding environment-variable path in plans.
+- Extension config uses per-extension sidecar files under `PI_CODING_AGENT_DIR`
+  resolved via `getAgentDir()`, not `settings.json`; see
+  `docs/extension-config.md`.
 - Keep this file minimal; put detailed workflow guidance in dedicated docs or
   extension comments.
 - Formatting follows `docs/style.md`; use its scripts for touched files.

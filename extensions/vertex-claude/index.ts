@@ -1,17 +1,45 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AnthropicOptions, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { getModel, streamAnthropic } from "@earendil-works/pi-ai/compat";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
+import * as NodeFileSystem from "@effect/platform-node-shared/NodeFileSystem";
+import { Data, Effect, FileSystem } from "effect";
 import { GoogleAuth } from "google-auth-library";
+import { join } from "node:path";
 
 const PROVIDER = "vertex-claude";
 const AUTH_MARKER = "gcp-vertex-credentials";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 64_000;
 const DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+// https://platform.claude.com/docs/en/models/opus-5-5/overview
+const OPUS_5_5_FALLBACK = {
+  reasoning: true,
+  thinkingLevelMap: { off: null, xhigh: "xhigh", max: "max" },
+  input: ["text", "image"],
+  cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+  contextWindow: 1_000_000,
+  maxTokens: 128_000,
+  compat: {
+    supportsMidConvoEffort: true,
+    forceAdaptiveThinking: true,
+    supportsTemperature: false,
+    supportsStrictTools: true,
+  },
+} satisfies Pick<
+  Model<"anthropic-messages">,
+  "reasoning" | "thinkingLevelMap" | "input" | "cost" | "contextWindow" | "maxTokens" | "compat"
+>;
 
-type Family = "opus" | "sonnet" | "haiku" | "fable";
+const FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
+type Family = (typeof FAMILIES)[number];
 type Lifecycle = "active" | "deprecated" | "custom";
+export type AliasOverrides = Partial<Record<Family, string>>;
+
+export class AliasConfigError extends Data.TaggedError("AliasConfigError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 type ReasoningLevel = NonNullable<SimpleStreamOptions["reasoning"]>;
 type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -30,6 +58,64 @@ export interface VertexClaudeModel {
 function env(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseAliasOverrides(value: unknown, source: string): AliasOverrides {
+  if (!isRecord(value)) throw new Error(`${source} must contain a JSON object.`);
+  if (value.aliases === undefined) return {};
+  if (!isRecord(value.aliases)) throw new Error(`${source} aliases must be a JSON object.`);
+
+  const overrides: AliasOverrides = {};
+  for (const [family, target] of Object.entries(value.aliases)) {
+    if (!FAMILIES.includes(family as Family))
+      throw new Error(`${source} contains an unknown alias family: ${family}`);
+    if (typeof target !== "string" || !target.trim())
+      throw new Error(`${source} alias ${family} must be a non-empty model ID.`);
+    overrides[family as Family] = target.trim();
+  }
+  return overrides;
+}
+
+export function loadAliasOverrides(
+  configPath: string,
+): Effect.Effect<AliasOverrides, AliasConfigError, FileSystem.FileSystem> {
+  return Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const content = yield* fileSystem.readFileString(configPath).pipe(
+      Effect.catch((error) =>
+        error.reason._tag === "NotFound"
+          ? Effect.succeed(undefined)
+          : Effect.fail(
+              new AliasConfigError({
+                message: `Failed to read ${configPath}: ${error.message}`,
+                cause: error,
+              }),
+            ),
+      ),
+    );
+    if (content === undefined) return {};
+
+    const value = yield* Effect.try({
+      try: (): unknown => JSON.parse(content),
+      catch: (cause) =>
+        new AliasConfigError({
+          message: `Failed to parse ${configPath}: ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause,
+        }),
+    });
+    return yield* Effect.try({
+      try: () => parseAliasOverrides(value, configPath),
+      catch: (cause) =>
+        new AliasConfigError({
+          message: cause instanceof Error ? cause.message : String(cause),
+          cause,
+        }),
+    });
+  });
 }
 
 function resolveProjectId(): string | undefined {
@@ -109,13 +195,31 @@ function versionScore(model: VertexClaudeModel): number {
 // registered for existing Vertex users, but never become aliases.
 export const DOCUMENTED_VERTEX_MODELS: readonly VertexClaudeModel[] = [
   {
+    id: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    family: "opus",
+    major: 5,
+    minor: 5,
+    lifecycle: "active",
+    aliasEligible: true,
+  },
+  {
+    id: "claude-opus-5",
+    name: "Claude Opus 5",
+    family: "opus",
+    major: 5,
+    minor: 0,
+    lifecycle: "active",
+    aliasEligible: false,
+  },
+  {
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
     family: "opus",
     major: 4,
     minor: 8,
     lifecycle: "active",
-    aliasEligible: true,
+    aliasEligible: false,
   },
   {
     id: "claude-opus-4-7",
@@ -256,22 +360,32 @@ function dedupe(models: readonly VertexClaudeModel[]): VertexClaudeModel[] {
 export function addAliases(
   models: readonly VertexClaudeModel[],
   manifestMode: boolean,
+  overrides: AliasOverrides = {},
 ): VertexClaudeModel[] {
   const result = [...models];
-  for (const family of ["opus", "sonnet", "haiku", "fable"] as const) {
+  for (const family of FAMILIES) {
+    const override = overrides[family];
+    const configured = override ? models.find((model) => model.id === override) : undefined;
+    if (override && !configured)
+      throw new Error(`Vertex Claude ${family} alias target is not registered: ${override}`);
+    if (configured && configured.family !== family)
+      throw new Error(
+        `Vertex Claude ${family} alias target belongs to ${configured.family ?? "unknown"}: ${override}`,
+      );
+
     const candidates = models.filter(
       (model) => model.family === family && (!manifestMode || model.aliasEligible),
     );
-    const best = candidates.sort(
-      (a, b) => versionScore(b) - versionScore(a) || a.id.localeCompare(b.id),
-    )[0];
+    const best =
+      configured ??
+      candidates.sort((a, b) => versionScore(b) - versionScore(a) || a.id.localeCompare(b.id))[0];
     if (!best) continue;
     const displayFamily = `${family[0].toUpperCase()}${family.slice(1)}`;
     for (const id of [family, `claude-${family}`]) {
       result.push({
         ...best,
         id,
-        name: `Claude ${displayFamily} (latest: ${best.id})`,
+        name: `Claude ${displayFamily} (${override ? "configured" : "latest"}: ${best.id})`,
         aliasTarget: best.id,
       });
     }
@@ -286,20 +400,24 @@ function anthropicCatalogModel(modelId: string): Model<"anthropic-messages"> | u
 }
 
 function toPiModel(model: VertexClaudeModel) {
-  const catalog = anthropicCatalogModel(model.aliasTarget ?? model.id);
+  const targetId = model.aliasTarget ?? model.id;
+  const catalog = anthropicCatalogModel(targetId);
+  // Opus 5.5 predates its Pi catalog entry. Keep this exact fallback aligned
+  // with the published model limits and adaptive-thinking requirements.
+  const metadata = catalog ?? (targetId === "claude-opus-5-5" ? OPUS_5_5_FALLBACK : undefined);
   // The host catalog is authoritative whenever it recognizes the base model ID.
   // This retains Vertex's exact request ID while inheriting Pi's continuously
   // updated compat, thinking, input, cost, context, and output metadata.
   return {
     id: model.id,
     name: model.name,
-    reasoning: catalog?.reasoning ?? true,
-    thinkingLevelMap: catalog?.thinkingLevelMap,
-    input: catalog?.input ?? (["text", "image"] as ("text" | "image")[]),
-    cost: catalog?.cost ?? DEFAULT_COST,
-    contextWindow: catalog?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: catalog?.maxTokens ?? DEFAULT_MAX_TOKENS,
-    compat: catalog?.compat,
+    reasoning: metadata?.reasoning ?? true,
+    thinkingLevelMap: metadata?.thinkingLevelMap,
+    input: metadata?.input ?? (["text", "image"] as ("text" | "image")[]),
+    cost: metadata?.cost ?? DEFAULT_COST,
+    contextWindow: metadata?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    maxTokens: metadata?.maxTokens ?? DEFAULT_MAX_TOKENS,
+    compat: metadata?.compat,
   };
 }
 
@@ -448,14 +566,15 @@ export function vertexThinkingOptions(
   options?: SimpleStreamOptions,
 ): Pick<AnthropicOptions, "maxTokens" | "thinkingEnabled" | "thinkingBudgetTokens" | "effort"> {
   const maxTokens = clampMaxTokensToContext(model, context, options?.maxTokens ?? model.maxTokens);
-  if (!options?.reasoning) return { maxTokens, thinkingEnabled: false };
+  const reasoning = options?.reasoning ?? (model.id === "claude-opus-5-5" ? "medium" : undefined);
+  if (!reasoning) return { maxTokens, thinkingEnabled: false };
   if (model.compat?.forceAdaptiveThinking === true)
     return {
       maxTokens,
       thinkingEnabled: true,
-      effort: effortForReasoning(options.reasoning, model),
+      effort: effortForReasoning(reasoning, model),
     };
-  const budget = legacyThinkingBudget(options.reasoning, options);
+  const budget = legacyThinkingBudget(reasoning, options);
   const expandedMaxTokens = legacyMaxTokens(model, options, budget);
   const clampedMaxTokens = clampMaxTokensToContext(model, context, expandedMaxTokens);
   // The Anthropic builder treats a zero budget as 1024.  If there is not room
@@ -521,11 +640,16 @@ async function validateAdc(): Promise<void> {
   await client.getRequestHeaders();
 }
 
-export default function vertexClaudeExtension(pi: ExtensionAPI) {
+export default async function vertexClaudeExtension(pi: ExtensionAPI) {
   const configured = modelsFromEnv();
   const manifestMode = process.env.VERTEX_CLAUDE_MODELS === undefined;
   const concreteModels = dedupe(manifestMode ? DOCUMENTED_VERTEX_MODELS : configured);
-  const modelList = addAliases(concreteModels, manifestMode);
+  const aliasOverrides = await Effect.runPromise(
+    loadAliasOverrides(join(getAgentDir(), "vertex-claude.json")).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    ),
+  );
+  const modelList = addAliases(concreteModels, manifestMode, aliasOverrides);
   const aliasTargets = new Map(
     modelList.flatMap((model) =>
       model.aliasTarget ? [[model.id, model.aliasTarget] as const] : [],

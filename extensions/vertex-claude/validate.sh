@@ -57,6 +57,8 @@ assert_exact_model_set() {
 }
 
 manifest_models=(
+	claude-opus-5-5
+	claude-opus-5
 	claude-opus-4-8
 	claude-opus-4-7
 	claude-opus-4-6
@@ -87,6 +89,8 @@ expected_manifest_models=(
 	claude-haiku
 	'claude-haiku-4-5@20251001'
 	claude-opus
+	claude-opus-5
+	claude-opus-5-5
 	'claude-opus-4-1@20250805'
 	'claude-opus-4-5@20251101'
 	claude-opus-4-6
@@ -147,7 +151,8 @@ npx tsc --strict --module NodeNext --moduleResolution NodeNext \
 	index.ts validate-harness.ts
 (
 	unset VERTEX_CLAUDE_MODELS
-	node "$VALIDATION_EXT_DIR/.validation-harness/validate-harness.js"
+	PI_CODING_AGENT_DIR="$VALIDATION_CONFIG_DIR" \
+		node "$VALIDATION_EXT_DIR/.validation-harness/validate-harness.js"
 )
 echo '==> Production dependency audit'
 npm audit --omit=dev

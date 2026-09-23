@@ -5,6 +5,8 @@
   "type": "module",
   "dependencies": {
     "@anthropic-ai/vertex-sdk": "0.16.1",
+    "@effect/platform-node-shared": "4.0.0-rc.117",
+    "effect": "4.0.0-rc.117",
     "google-auth-library": "^10.2.0"
   },
   "devDependencies": {

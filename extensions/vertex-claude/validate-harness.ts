@@ -1,15 +1,23 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import vertexClaudeExtension, {
   DOCUMENTED_VERTEX_MODELS,
   addAliases,
   classifyDiagnosticError,
+  loadAliasOverrides,
   modelsFromEnv,
   parseClaudeModel,
   vertexThinkingOptions,
 } from "./index.js";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
+import * as NodeFileSystem from "@effect/platform-node-shared/NodeFileSystem";
+import { Effect, FileSystem } from "effect";
+import type { Model } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
+import { join } from "node:path";
 
 const expectedManifest = [
+  "claude-opus-5-5",
+  "claude-opus-5",
   "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-opus-4-6",
@@ -38,6 +46,79 @@ const throws = (fn: () => unknown, expected: string, label: string) => {
     equal((error as Error).message, expected, label);
   }
 };
+const rejectsContaining = async (fn: () => Promise<unknown>, expected: string, label: string) => {
+  try {
+    await fn();
+    fail(`${label}: did not reject`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes(expected)) fail(`${label}: expected ${expected}, got ${message}`);
+  }
+};
+const runWithFileSystem = <A, E>(program: Effect.Effect<A, E, FileSystem.FileSystem>) =>
+  Effect.runPromise(program.pipe(Effect.provide(NodeFileSystem.layer)));
+const makeTempDirectory = (prefix: string) =>
+  runWithFileSystem(
+    Effect.flatMap(FileSystem.FileSystem, (fileSystem) => fileSystem.makeTempDirectory({ prefix })),
+  );
+const writeText = (path: string, content: string) =>
+  runWithFileSystem(
+    Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
+      fileSystem.writeFileString(path, content),
+    ),
+  );
+const removePath = (path: string) =>
+  runWithFileSystem(
+    Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
+      fileSystem.remove(path, { recursive: true, force: true }),
+    ),
+  );
+interface RegisteredModel {
+  readonly id: string;
+  readonly name: string;
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  readonly thinkingLevelMap?: Readonly<Record<string, string | null>>;
+  readonly compat?: Readonly<Record<string, unknown>>;
+  readonly cost: unknown;
+  readonly input: unknown;
+}
+interface RegisteredProvider {
+  readonly models: readonly RegisteredModel[];
+}
+const isRegisteredModel = (value: unknown): value is RegisteredModel =>
+  typeof value === "object" &&
+  value !== null &&
+  "id" in value &&
+  typeof value.id === "string" &&
+  "name" in value &&
+  typeof value.name === "string" &&
+  "contextWindow" in value &&
+  typeof value.contextWindow === "number" &&
+  "maxTokens" in value &&
+  typeof value.maxTokens === "number" &&
+  "cost" in value &&
+  "input" in value;
+const isRegisteredProvider = (value: unknown): value is RegisteredProvider =>
+  typeof value === "object" &&
+  value !== null &&
+  "models" in value &&
+  Array.isArray(value.models) &&
+  value.models.every(isRegisteredModel);
+const captureProvider = (capture: (provider: RegisteredProvider) => void): ExtensionAPI =>
+  ({
+    registerProvider: (_id: string, value: unknown) => {
+      if (isRegisteredProvider(value)) capture(value);
+      else fail("invalid registered provider");
+    },
+    registerCommand: () => {},
+  }) as unknown as ExtensionAPI;
+const requireProvider = (provider: RegisteredProvider | undefined, label: string) =>
+  provider ?? fail(`${label} provider was not registered`);
+const requireModel = (models: Map<string, RegisteredModel>, id: string) =>
+  models.get(id) ?? fail(`registered ${id}`);
+const asAnthropicModel = (model: RegisteredModel) =>
+  model as unknown as Model<"anthropic-messages">;
 
 equal(
   JSON.stringify(DOCUMENTED_VERTEX_MODELS.map((model) => model.id)),
@@ -48,7 +129,7 @@ for (const model of DOCUMENTED_VERTEX_MODELS) {
   if (!["active", "deprecated"].includes(model.lifecycle)) fail(`manifest lifecycle ${model.id}`);
   if (
     model.aliasEligible !==
-    (model.id === "claude-opus-4-8" ||
+    (model.id === "claude-opus-5-5" ||
       model.id === "claude-sonnet-5" ||
       model.id === "claude-haiku-4-5@20251001" ||
       model.id === "claude-fable-5")
@@ -61,8 +142,8 @@ const aliases = new Map(
     .map((model) => [model.id, model.aliasTarget]),
 );
 for (const [alias, target] of Object.entries({
-  opus: "claude-opus-4-8",
-  "claude-opus": "claude-opus-4-8",
+  opus: "claude-opus-5-5",
+  "claude-opus": "claude-opus-5-5",
   sonnet: "claude-sonnet-5",
   "claude-sonnet": "claude-sonnet-5",
   haiku: "claude-haiku-4-5@20251001",
@@ -71,6 +152,60 @@ for (const [alias, target] of Object.entries({
   "claude-fable": "claude-fable-5",
 }))
   equal(aliases.get(alias), target, `alias ${alias}`);
+
+const aliasConfigDir = await makeTempDirectory("vertex-claude-alias-test-");
+const aliasConfigPath = join(aliasConfigDir, "vertex-claude.json");
+try {
+  equal(
+    JSON.stringify(await runWithFileSystem(loadAliasOverrides(aliasConfigPath))),
+    "{}",
+    "missing alias config",
+  );
+  await writeText(aliasConfigPath, JSON.stringify({ aliases: { opus: "claude-opus-4-6" } }));
+  const configuredAliases = new Map(
+    addAliases(
+      DOCUMENTED_VERTEX_MODELS,
+      true,
+      await runWithFileSystem(loadAliasOverrides(aliasConfigPath)),
+    )
+      .filter((model) => model.aliasTarget)
+      .map((model) => [model.id, model.aliasTarget]),
+  );
+  equal(configuredAliases.get("opus"), "claude-opus-4-6", "configured opus alias");
+  equal(configuredAliases.get("claude-opus"), "claude-opus-4-6", "configured claude-opus alias");
+  equal(configuredAliases.get("sonnet"), "claude-sonnet-5", "independent sonnet default");
+
+  await writeText(aliasConfigPath, "{");
+  await rejectsContaining(
+    () => runWithFileSystem(loadAliasOverrides(aliasConfigPath)),
+    "Failed to parse",
+    "malformed config",
+  );
+  await rejectsContaining(
+    () => runWithFileSystem(loadAliasOverrides(aliasConfigDir)),
+    "Failed to read",
+    "unreadable config",
+  );
+  await writeText(aliasConfigPath, JSON.stringify({ aliases: { mythos: "claude-mythos-5" } }));
+  await rejectsContaining(
+    () => runWithFileSystem(loadAliasOverrides(aliasConfigPath)),
+    `${aliasConfigPath} contains an unknown alias family: mythos`,
+    "unknown alias family",
+  );
+  throws(
+    () => addAliases(DOCUMENTED_VERTEX_MODELS, true, { opus: "claude-sonnet-5" }),
+    "Vertex Claude opus alias target belongs to sonnet: claude-sonnet-5",
+    "wrong alias family",
+  );
+  throws(
+    () => addAliases(DOCUMENTED_VERTEX_MODELS, true, { opus: "claude-opus-9" }),
+    "Vertex Claude opus alias target is not registered: claude-opus-9",
+    "unavailable alias target",
+  );
+} finally {
+  await removePath(aliasConfigDir);
+}
+
 for (const id of [
   "claude-nonsense",
   "claude-",
@@ -158,59 +293,136 @@ for (const [error, expected] of [
 
 let fetchCalls = 0;
 const originalFetch = globalThis.fetch;
+const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+const savedModelsOverride = process.env.VERTEX_CLAUDE_MODELS;
+const registrationConfigDir = await makeTempDirectory("vertex-claude-registration-test-");
+process.env.PI_CODING_AGENT_DIR = registrationConfigDir;
 globalThis.fetch = (async () => {
   fetchCalls++;
   throw new Error("startup must not fetch");
 }) as typeof fetch;
-// A query string forces a fresh extension-module evaluation after fetch is guarded.
-const guardSpecifier: string = "./index.js?startup-network-guard";
-const guardedExtension = await import(guardSpecifier);
-let provider: any;
-guardedExtension.default({
-  registerProvider: (_id: string, value: unknown) => {
-    provider = value;
-  },
-  registerCommand: () => {},
-} as any);
-equal(fetchCalls, 0, "import, initialization, and model registration have no startup network");
-const registered = new Map<string, any>(provider.models.map((entry: any) => [entry.id, entry]));
-for (const id of ["claude-opus-4-8", "opus", "claude-sonnet-5", "sonnet"]) {
-  const registeredModel = registered.get(id);
-  if (!registeredModel) fail(`registered ${id}`);
-  const target = aliases.get(id) ?? id;
-  const catalog = getModel("anthropic", target.replace(/@.*$/, "") as never) as any;
-  if (catalog)
-    for (const field of [
-      "compat",
-      "thinkingLevelMap",
-      "cost",
-      "input",
-      "contextWindow",
-      "maxTokens",
-    ])
-      equal(
-        JSON.stringify(registeredModel[field]),
-        JSON.stringify(catalog[field]),
-        `${id} inherited ${field}`,
-      );
+try {
+  // A query string forces a fresh extension-module evaluation after fetch is guarded.
+  const guardSpecifier: string = "./index.js?startup-network-guard";
+  const guardedExtension = await import(guardSpecifier);
+  let capturedProvider: RegisteredProvider | undefined;
+  await guardedExtension.default(captureProvider((value) => (capturedProvider = value)));
+  const provider = requireProvider(capturedProvider, "default");
+  equal(fetchCalls, 0, "import, initialization, and model registration have no startup network");
+  const registered = new Map(provider.models.map((entry) => [entry.id, entry]));
+  for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "sonnet"]) {
+    const registeredModel = requireModel(registered, id);
+    const target = aliases.get(id) ?? id;
+    const catalog = getModel("anthropic", target.replace(/@.*$/, "") as never) as any;
+    if (catalog)
+      for (const field of [
+        "compat",
+        "thinkingLevelMap",
+        "cost",
+        "input",
+        "contextWindow",
+        "maxTokens",
+      ] as const)
+        equal(
+          JSON.stringify(registeredModel[field]),
+          JSON.stringify(catalog[field]),
+          `${id} inherited ${field}`,
+        );
+  }
+  equal(
+    requireModel(registered, "opus").name.includes("claude-opus-5-5"),
+    true,
+    "alias metadata target",
+  );
+  for (const id of ["claude-opus-5-5", "opus", "claude-opus"]) {
+    const opus55 = requireModel(registered, id);
+    equal(opus55.contextWindow, 1_000_000, `${id} fallback context`);
+    equal(opus55.maxTokens, 128_000, `${id} fallback output`);
+    equal(opus55.thinkingLevelMap?.off, null, `${id} always-on thinking`);
+    equal(opus55.compat?.forceAdaptiveThinking, true, `${id} adaptive thinking`);
+    equal(opus55.compat?.supportsMidConvoEffort, true, `${id} per-message effort`);
+    equal(
+      JSON.stringify(opus55.cost),
+      JSON.stringify({
+        input: 4,
+        output: 20,
+        cacheRead: 0.2,
+        cacheWrite: 5,
+      }),
+      `${id} fallback cost`,
+    );
+  }
+  const opus55Context = { messages: [] };
+  const opus55Default = vertexThinkingOptions(
+    asAnthropicModel(requireModel(registered, aliases.get("opus")!)),
+    opus55Context,
+    {},
+  );
+  equal(opus55Default.thinkingEnabled, true, "Opus 5.5 default adaptive thinking");
+  equal(opus55Default.effort, "medium", "Opus 5.5 default effort");
+  const opus55Explicit = vertexThinkingOptions(
+    asAnthropicModel(requireModel(registered, aliases.get("claude-opus")!)),
+    opus55Context,
+    { reasoning: "max" },
+  );
+  equal(opus55Explicit.thinkingEnabled, true, "Opus 5.5 explicit adaptive thinking");
+  equal(opus55Explicit.effort, "max", "Opus 5.5 explicit effort");
+  equal(
+    requireModel(registered, "claude-opus-4-8").compat?.forceAdaptiveThinking,
+    true,
+    "Opus adaptive thinking metadata",
+  );
+  equal(
+    requireModel(registered, "claude-opus-4-8").compat?.supportsTemperature,
+    false,
+    "Opus temperature metadata",
+  );
+  equal(
+    requireModel(registered, "claude-sonnet-5").compat?.forceAdaptiveThinking,
+    true,
+    "Sonnet adaptive thinking metadata",
+  );
+
+  await writeText(
+    join(registrationConfigDir, "vertex-claude.json"),
+    JSON.stringify({ aliases: { opus: "claude-opus-4-6" } }),
+  );
+  const configuredSpecifier: string = "./index.js?configured-alias-registration";
+  const configuredExtension = await import(configuredSpecifier);
+  let capturedConfiguredProvider: RegisteredProvider | undefined;
+  await configuredExtension.default(
+    captureProvider((value) => (capturedConfiguredProvider = value)),
+  );
+  const configuredProvider = requireProvider(capturedConfiguredProvider, "configured");
+  const configuredRegistered = new Map(configuredProvider.models.map((entry) => [entry.id, entry]));
+  for (const id of ["opus", "claude-opus"])
+    equal(
+      requireModel(configuredRegistered, id).name.includes("configured: claude-opus-4-6"),
+      true,
+      `${id} configured registration`,
+    );
+  equal(
+    requireModel(configuredRegistered, "sonnet").name.includes("latest: claude-sonnet-5"),
+    true,
+    "sonnet default registration",
+  );
+
+  process.env.VERTEX_CLAUDE_MODELS = "claude-opus-5-5,claude-sonnet-5";
+  const restrictedSpecifier: string = "./index.js?restricted-configured-alias";
+  const restrictedExtension = await import(restrictedSpecifier);
+  await rejectsContaining(
+    () => restrictedExtension.default(captureProvider(() => {})),
+    "Vertex Claude opus alias target is not registered: claude-opus-4-6",
+    "configured alias excluded by model override",
+  );
+} finally {
+  if (savedModelsOverride === undefined) delete process.env.VERTEX_CLAUDE_MODELS;
+  else process.env.VERTEX_CLAUDE_MODELS = savedModelsOverride;
+  if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+  await removePath(registrationConfigDir);
+  globalThis.fetch = originalFetch;
 }
-equal(registered.get("opus").name.includes("claude-opus-4-8"), true, "alias metadata target");
-equal(
-  registered.get("claude-opus-4-8").compat.forceAdaptiveThinking,
-  true,
-  "Opus adaptive thinking metadata",
-);
-equal(
-  registered.get("claude-opus-4-8").compat.supportsTemperature,
-  false,
-  "Opus temperature metadata",
-);
-equal(
-  registered.get("claude-sonnet-5").compat.forceAdaptiveThinking,
-  true,
-  "Sonnet adaptive thinking metadata",
-);
-globalThis.fetch = originalFetch;
 
 const urls: string[] = [];
 const fakeAuth = {
