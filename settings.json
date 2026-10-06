@@ -13,14 +13,14 @@
   "theme": "dark",
   "sessionDir": "~/.local/state/pi/sessions",
   "packages": [
-    "npm:pi-subagents@0.67.0",
+    "npm:pi-subagents@0.76.1",
     "npm:pi-intercom@0.13.0",
     "npm:pi-smart-fetch@0.3.17",
     "./packages/pi-sandbox",
     "./packages/pi-cursor-acp",
-    "npm:@juicesharp/rpiv-ask-user-question@2.10.1",
-    "npm:@juicesharp/rpiv-todo@2.10.1",
-    "npm:@juicesharp/rpiv-advisor@2.10.1",
+    "npm:@juicesharp/rpiv-ask-user-question@2.12.0",
+    "npm:@juicesharp/rpiv-todo@2.12.0",
+    "npm:@juicesharp/rpiv-advisor@2.12.0",
     "npm:pi-btw@0.4.1"
   ],
   "skills": [
