@@ -7,7 +7,6 @@
     "@juicesharp/rpiv-todo": "^2.10.1",
     "pi-btw": "^0.4.1",
     "pi-intercom": "^0.13.0",
-    "pi-mcp-adapter": "^2.32.0",
     "pi-smart-fetch": "^0.3.17",
     "pi-subagents": "^0.67.0"
   },

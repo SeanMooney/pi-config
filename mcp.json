@@ -1,19 +1,14 @@
 {
-  "settings": {
-    "toolPrefix": "server",
-    "idleTimeout": 10,
-    "directTools": false
-  },
   "mcpServers": {
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@4.1.0"],
-      "lifecycle": "lazy"
+      "exposure": "codemode"
     },
     "playwright": {
       "command": "npx",
       "args": ["-y", "@playwright/mcp@0.0.80"],
-      "lifecycle": "lazy"
+      "exposure": "codemode"
     }
   }
 }

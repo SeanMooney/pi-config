@@ -7,12 +7,12 @@
   "terminal": {
     "showTerminalProgress": true
   },
+  "defaultTools": ["+codemode"],
   "steeringMode": "all",
   "transport": "auto",
   "theme": "dark",
   "sessionDir": "~/.local/state/pi/sessions",
   "packages": [
-    "npm:pi-mcp-adapter@2.32.0",
     "npm:pi-subagents@0.67.0",
     "npm:pi-intercom@0.13.0",
     "npm:pi-smart-fetch@0.3.17",
