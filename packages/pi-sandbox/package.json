@@ -31,7 +31,7 @@
     "ci:check": "npm run check"
   },
   "dependencies": {
-    "@carderne/sandbox-runtime": "^0.0.69"
+    "@carderne/sandbox-runtime": "^0.0.76"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

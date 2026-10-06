@@ -46,6 +46,7 @@
     "deniedDomains": []
   },
   "filesystem": {
+    "denyMandatoryCwdFiles": false,
     "denyRead": [
       "~/.ssh",
       "~/.gnupg",
