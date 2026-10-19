@@ -26,5 +26,7 @@ also keep config outside `settings.json`.
 
 ## Current sidecar files
 
+- `web-search.json` — Codex-first search with Brave fallback. See
+  `docs/web-search.md` for functionality and configuration.
 - `vertex-claude.json` — Vertex Claude family alias overrides. See
   `extensions/vertex-claude/README.md`.

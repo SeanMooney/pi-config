@@ -1,0 +1,13 @@
+{
+  "openaiSearchProviders": ["openai-codex"],
+  "braveApiKey": "$BRAVE_API_KEY",
+  "searchRouting": {
+    "providers": ["openai", "brave"],
+    "useCurrentModel": false,
+    "fallbackOn": ["quota", "unsupported", "network", "transient", "invalid-response"]
+  },
+  "webSearch": {
+    "allowedProviders": ["openai", "brave"]
+  },
+  "workflow": "none"
+}

@@ -21,7 +21,8 @@
     "npm:@juicesharp/rpiv-ask-user-question@2.12.0",
     "npm:@juicesharp/rpiv-todo@2.12.0",
     "npm:@juicesharp/rpiv-advisor@2.12.0",
-    "npm:pi-btw@0.4.1"
+    "npm:pi-btw@0.4.1",
+    "npm:pi-web-access@0.42.0"
   ],
   "skills": [
     "~/repos/github.com/SeanMooney/openstack-ai-style-guide/plugins/teim-review/skills",
