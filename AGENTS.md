@@ -34,4 +34,5 @@ Nix Home Manager.
   `docs/extension-config.md`.
 - Keep this file minimal; put detailed workflow guidance in dedicated docs or
   extension comments.
+- Keep extension docs evergreen: usage/config, not tests or internals.
 - Formatting follows `docs/style.md`; use its scripts for touched files.
